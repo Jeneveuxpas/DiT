@@ -28,6 +28,7 @@ DATA_DIR="${DATA_DIR:-/dev/shm/data}"
 LATENTS_STATS="${LATENTS_STATS:-pretrained_models/sdvae-ft-mse-f8d4-latents-stats.pt}"
 IMAGE_SIZE="${IMAGE_SIZE:-256}"
 
+
 # 训练
 EPOCHS="${EPOCHS:-1400}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-256}"

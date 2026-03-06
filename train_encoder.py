@@ -116,16 +116,27 @@ def sample_posterior(moments, latents_scale=1., latents_bias=0.):
     return z
 
 
+ENC_TYPE_ALIASES = {
+    # SIT-style shorthand -> timm model name
+    "dinov2-s": "vit_small_patch14_dinov2.lvd142m",
+    "dinov2-b": "vit_base_patch14_dinov2.lvd142m",
+    "dinov2-l": "vit_large_patch14_dinov2.lvd142m",
+    "dinov2-g": "vit_giant_patch14_dinov2.lvd142m",
+}
+
+
 def build_encoder(enc_type, device):
     """
     Build frozen encoder (DINOv2) via timm.
+    Supports SIT-style shorthand (e.g. 'dinov2-b') or full timm names.
 
     Returns:
         encoder: Frozen encoder model.
         enc_dim: Encoder hidden dimension.
         enc_num_heads: Number of attention heads in encoder.
     """
-    encoder = timm.create_model(enc_type, pretrained=True)
+    timm_name = ENC_TYPE_ALIASES.get(enc_type, enc_type)
+    encoder = timm.create_model(timm_name, pretrained=True)
     encoder = encoder.to(device)
     encoder.eval()
     requires_grad(encoder, False)
