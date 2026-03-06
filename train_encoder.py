@@ -343,9 +343,18 @@ def main(args):
     )
     ema = deepcopy(model).to(device)
     requires_grad(ema, False)
-    model = DDP(model.to(device), device_ids=[rank])
+    model = model.to(device)
+    if args.compile:
+        logger.info("Compiling model with torch.compile...")
+        model = torch.compile(model)
+    model = DDP(model, device_ids=[rank])
     diffusion = create_diffusion(timestep_respacing="")
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Mixed precision scaler
+    scaler = torch.cuda.amp.GradScaler() if args.mixed_precision == "fp16" else None
+    amp_dtype = {"fp16": torch.float16, "bf16": torch.bfloat16}.get(args.mixed_precision, None)
+    logger.info(f"Mixed precision: {args.mixed_precision}")
 
     # Setup REPA projection loss:
     proj_loss_fn = None
@@ -488,37 +497,42 @@ def main(args):
                 enc_kv_list=enc_kv_list if args.use_kv else None,
                 stage=stage,
             )
-            loss_dict = diffusion.training_losses(model, x_latent, t, model_kwargs)
-            denoise_loss = loss_dict["loss"].mean()
+            with torch.cuda.amp.autocast(enabled=amp_dtype is not None, dtype=amp_dtype):
+                loss_dict = diffusion.training_losses(model, x_latent, t, model_kwargs)
+                denoise_loss = loss_dict["loss"].mean()
 
-            # Get side outputs from model:
-            model_module = model.module
-            distill_loss = model_module._distill_loss
-            zs = model_module._zs
+                # Get side outputs from model:
+                model_module = model.module if hasattr(model, 'module') else model
+                distill_loss = model_module._distill_loss
+                zs = model_module._zs
 
-            # Compute REPA projection loss:
-            proj_loss = torch.tensor(0.0, device=device)
-            if proj_loss_fn is not None and enc_features is not None and zs is not None:
-                # Align sequence lengths if needed
-                if enc_features.shape[1] != zs.shape[1]:
-                    B, N_enc, D_enc = enc_features.shape
-                    N_dit = zs.shape[1]
-                    h_enc = w_enc = int(N_enc ** 0.5)
-                    h_dit = w_dit = int(N_dit ** 0.5)
-                    enc_features = enc_features.permute(0, 2, 1).reshape(B, D_enc, h_enc, w_enc)
-                    enc_features = torch.nn.functional.interpolate(
-                        enc_features, size=(h_dit, w_dit), mode='bilinear', align_corners=False
-                    )
-                    enc_features = enc_features.reshape(B, D_enc, N_dit).permute(0, 2, 1)
-                proj_loss = proj_loss_fn(zs, enc_features.detach())
+                # Compute REPA projection loss:
+                proj_loss = torch.tensor(0.0, device=device)
+                if proj_loss_fn is not None and enc_features is not None and zs is not None:
+                    if enc_features.shape[1] != zs.shape[1]:
+                        B, N_enc, D_enc = enc_features.shape
+                        N_dit = zs.shape[1]
+                        h_enc = w_enc = int(N_enc ** 0.5)
+                        h_dit = w_dit = int(N_dit ** 0.5)
+                        enc_features = enc_features.permute(0, 2, 1).reshape(B, D_enc, h_enc, w_enc)
+                        enc_features = torch.nn.functional.interpolate(
+                            enc_features, size=(h_dit, w_dit), mode='bilinear', align_corners=False
+                        )
+                        enc_features = enc_features.reshape(B, D_enc, N_dit).permute(0, 2, 1)
+                    proj_loss = proj_loss_fn(zs, enc_features.detach())
 
-            # Compute total loss:
-            distill_coeff = args.distill_coeff if stage == 2 else 0.0
-            loss = denoise_loss + args.proj_coeff * proj_loss + distill_coeff * distill_loss
+                # Compute total loss:
+                distill_coeff = args.distill_coeff if stage == 2 else 0.0
+                loss = denoise_loss + args.proj_coeff * proj_loss + distill_coeff * distill_loss
 
             opt.zero_grad()
-            loss.backward()
-            opt.step()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
+            else:
+                loss.backward()
+                opt.step()
             update_ema(ema, model.module)
 
             # Logging:
@@ -633,6 +647,9 @@ if __name__ == "__main__":
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=12)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--mixed-precision", type=str, default="none", choices=["none", "fp16", "bf16"],
+                        help="Mixed precision training (fp16/bf16 recommended for speed)")
+    parser.add_argument("--compile", action="store_true", help="torch.compile the model for speed")
     parser.add_argument("--ckpt-every", type=int, default=50_000)
 
     # Encoder KV distillation args:

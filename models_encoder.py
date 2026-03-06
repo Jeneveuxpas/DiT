@@ -63,29 +63,22 @@ class AttentionWithEncoderKV(nn.Module):
         has_enc_kv = enc_k is not None and enc_v is not None
 
         if has_enc_kv and stage == 1:
-            # Stage 1: Use encoder K/V
-            # Handle sequence length mismatch by interpolating encoder KV
+            # Stage 1: cross-attention with encoder K/V (Flash Attention)
             enc_k_use, enc_v_use = self._align_seq_len(enc_k, enc_v, N)
-            attn = (q * self.scale) @ enc_k_use.transpose(-2, -1)
-            attn = attn.softmax(dim=-1)
-            x_out = attn @ enc_v_use
+            x_out = F.scaled_dot_product_attention(q, enc_k_use, enc_v_use)
         elif has_enc_kv and stage == 2:
-            # Stage 2: Use own K/V, compute distillation loss on attention output
+            # Stage 2: own self-attention + distillation loss (Flash Attention)
             enc_k_use, enc_v_use = self._align_seq_len(enc_k, enc_v, N)
 
-            attn_w_own = (q * self.scale @ k.transpose(-2, -1)).softmax(dim=-1)
-            x_out = attn_w_own @ v
+            x_out = F.scaled_dot_product_attention(q, k, v)
 
-            # o* = SDPA(Q, h(K*), h(V*))  — scaffold output, enc_k/v already no_grad
-            attn_w_enc = (q.detach() * self.scale @ enc_k_use.transpose(-2, -1)).softmax(dim=-1)
-            o_star = (attn_w_enc @ enc_v_use).detach()
+            # o* = SDPA(Q, h(K*), h(V*)) — scaffold output, enc_k/v already no_grad
+            o_star = F.scaled_dot_product_attention(q.detach(), enc_k_use, enc_v_use).detach()
 
             distill_loss = F.mse_loss(x_out, o_star)
         else:
-            # No encoder KV: standard self-attention
-            attn = (q * self.scale) @ k.transpose(-2, -1)
-            attn = attn.softmax(dim=-1)
-            x_out = attn @ v
+            # No encoder KV: standard self-attention (Flash Attention)
+            x_out = F.scaled_dot_product_attention(q, k, v)
 
         x_out = x_out.transpose(1, 2).reshape(B, N, C)
         x_out = self.proj(x_out)

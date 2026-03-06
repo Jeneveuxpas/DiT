@@ -11,6 +11,9 @@ epochs: 20
 global-batch-size: 256
 ckpt-every: 50000
 log-every: 100
+mixed-precision: fp16
+compile: true
+
 
 # Encoder KV
 use-kv: true
