@@ -24,7 +24,7 @@ SKIP_EVAL="${SKIP_EVAL:-false}"
 MODEL_SIZE="${MODEL_SIZE:-XL}"
 
 # 数据
-DATA_DIR="${DATA_DIR:-/data/imagenet_latents}"
+DATA_DIR="${DATA_DIR:-/dev/shm/data}"
 LATENTS_STATS="${LATENTS_STATS:-pretrained_models/sdvae-ft-mse-f8d4-latents-stats.pt}"
 IMAGE_SIZE="${IMAGE_SIZE:-256}"
 
@@ -44,7 +44,7 @@ KV_PROJ_TYPE="${KV_PROJ_TYPE:-linear}"
 KV_NORM_TYPE="${KV_NORM_TYPE:-layer}"
 
 # 两阶段
-STAGE1_STEPS="${STAGE1_STEPS:-100000}"
+STAGE1_STEPS="${STAGE1_STEPS:-30000}"
 DISTILL_COEFF="${DISTILL_COEFF:-1.0}"
 
 # REPA
@@ -58,7 +58,7 @@ EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-32}"
 NUM_SAMPLING_STEPS="${NUM_SAMPLING_STEPS:-250}"
 CFG_SCALE="${CFG_SCALE:-1.5}"
 VAE="${VAE:-mse}"
-REF_BATCH="${REF_BATCH:-evaluations/VIRTUAL_imagenet256_labeled.npz}"
+REF_BATCH="${REF_BATCH:-/workspace/SIT/VIRTUAL_imagenet256_labeled.npz}"
 
 # ── 解析命令行参数 ─────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -285,8 +285,8 @@ if [ "$SKIP_EVAL" = "false" ]; then
         if [ -f "$SAMPLE_NPZ" ]; then
             echo "计算 FID..."
             python evaluations/evaluator.py \
-                ${REF_BATCH} \
-                ${SAMPLE_NPZ}
+                --ref_batch ${REF_BATCH} \
+                --sample_batch ${SAMPLE_NPZ}
         else
             echo "未找到 npz 文件，请检查 ${SAMPLE_DIR_BASE}"
         fi
