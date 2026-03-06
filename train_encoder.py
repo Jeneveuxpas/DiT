@@ -125,7 +125,7 @@ ENC_TYPE_ALIASES = {
 }
 
 
-def build_encoder(enc_type, device):
+def build_encoder(enc_type, device, img_size=224):
     """
     Build frozen encoder (DINOv2) via timm.
     Supports SIT-style shorthand (e.g. 'dinov2-b') or full timm names.
@@ -136,7 +136,7 @@ def build_encoder(enc_type, device):
         enc_num_heads: Number of attention heads in encoder.
     """
     timm_name = ENC_TYPE_ALIASES.get(enc_type, enc_type)
-    encoder = timm.create_model(timm_name, pretrained=True)
+    encoder = timm.create_model(timm_name, pretrained=True, img_size=img_size)
     encoder = encoder.to(device)
     encoder.eval()
     requires_grad(encoder, False)
@@ -276,7 +276,7 @@ def main(args):
 
     # Build frozen encoder (DINOv2):
     if args.use_kv or args.proj_coeff > 0:
-        encoder, enc_dim, enc_num_heads = build_encoder(args.enc_type, device)
+        encoder, enc_dim, enc_num_heads = build_encoder(args.enc_type, device, img_size=args.enc_resolution)
         logger.info(f"Encoder: {args.enc_type}, dim={enc_dim}, heads={enc_num_heads}")
 
         # Parse layer indices for KV extraction
