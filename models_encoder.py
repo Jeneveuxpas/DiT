@@ -149,22 +149,43 @@ class ProjectionLayer(nn.Module):
     """
     Projection layer for REPA loss.
     Projects DiT hidden states to encoder feature dimension for alignment.
-    Adapted from SIT's sit.py.
+    Aligned with SIT's sit.py ProjectionLayer.
+
+    proj_type:
+      "linear" - single nn.Linear(in_dim -> out_dim)
+      "mlp"    - 3-layer MLP with SiLU: Linear -> SiLU -> Linear -> SiLU -> Linear
+      "conv"   - single nn.Conv2d(kernel_size), token sequence reshaped to H x W grid
     """
-    def __init__(self, in_dim, out_dim, num_layers=2):
+    def __init__(self, in_dim, out_dim, proj_type="linear", projector_dim=2048, kernel_size=1):
         super().__init__()
-        layers = []
-        for i in range(num_layers):
-            if i == 0:
-                layers.append(nn.Linear(in_dim, out_dim))
-            else:
-                layers.append(nn.Linear(out_dim, out_dim))
-            if i < num_layers - 1:
-                layers.append(nn.GELU())
-        self.proj = nn.Sequential(*layers)
+        self.proj_type = proj_type
+        if proj_type == "linear":
+            self.projection_layer = nn.Linear(in_dim, out_dim)
+        elif proj_type == "mlp":
+            self.projection_layer = nn.Sequential(
+                nn.Linear(in_dim, projector_dim),
+                nn.SiLU(),
+                nn.Linear(projector_dim, projector_dim),
+                nn.SiLU(),
+                nn.Linear(projector_dim, out_dim),
+            )
+        elif proj_type == "conv":
+            padding = kernel_size // 2
+            self.projection_layer = nn.Conv2d(in_dim, out_dim, kernel_size=kernel_size, stride=1, padding=padding)
+        else:
+            raise ValueError(f"Unknown proj_type: {proj_type}. Choose from: linear, mlp, conv")
 
     def forward(self, x):
-        return self.proj(x)
+        # x: (B, T, D)
+        B, T, D = x.shape
+        if self.proj_type in ("linear", "mlp"):
+            return self.projection_layer(x.reshape(B * T, D)).reshape(B, T, -1)
+        else:  # conv
+            H = W = int(math.isqrt(T))
+            assert H * W == T, f"conv projector requires square token grid; got T={T}"
+            x_ = x.reshape(B, H, W, D).permute(0, 3, 1, 2).contiguous()  # (B, D, H, W)
+            y = self.projection_layer(x_)                                   # (B, out_dim, H, W)
+            return y.permute(0, 2, 3, 1).contiguous().reshape(B, T, -1)
 
 
 class DiTWithEncoderKV(nn.Module):
@@ -196,12 +217,15 @@ class DiTWithEncoderKV(nn.Module):
         enc_dim=1024,
         enc_num_heads=16,
         num_enc_kv_layers=0,
+        dit_kv_layer_indices=None,   # which DiT blocks receive encoder KV; defaults to first num_enc_kv_layers
         kv_proj_type="linear",
         kv_norm_type="layer",
         # REPA params
         encoder_depth=8,
         repa_out_dim=1024,
-        repa_proj_layers=2,
+        repa_proj_type="linear",
+        repa_projector_dim=2048,
+        repa_proj_kernel_size=1,
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
@@ -225,6 +249,12 @@ class DiTWithEncoderKV(nn.Module):
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
 
+        # DiT layer indices that receive encoder KV (default: first num_enc_kv_layers blocks)
+        if dit_kv_layer_indices is not None:
+            self.dit_kv_layer_indices = list(dit_kv_layer_indices)
+        else:
+            self.dit_kv_layer_indices = list(range(num_enc_kv_layers))
+
         # Encoder KV projection (only if we have encoder KV layers)
         self.num_enc_kv_layers = num_enc_kv_layers
         if num_enc_kv_layers > 0:
@@ -244,7 +274,9 @@ class DiTWithEncoderKV(nn.Module):
         self.repa_projector = ProjectionLayer(
             in_dim=hidden_size,
             out_dim=repa_out_dim,
-            num_layers=repa_proj_layers,
+            proj_type=repa_proj_type,
+            projector_dim=repa_projector_dim,
+            kernel_size=repa_proj_kernel_size,
         )
 
         # Side outputs (set during forward)
@@ -337,11 +369,13 @@ class DiTWithEncoderKV(nn.Module):
         total_distill_loss = torch.tensor(0.0, device=x.device)
         zs = None
 
+        dit_kv_index_map = {layer_idx: j for j, layer_idx in enumerate(self.dit_kv_layer_indices)}
+
         for i, block in enumerate(self.blocks):
             # Determine encoder K/V for this block
             enc_k, enc_v = None, None
-            if projected_kv is not None and i < self.num_enc_kv_layers:
-                enc_k, enc_v = projected_kv[i]
+            if projected_kv is not None and i in dit_kv_index_map:
+                enc_k, enc_v = projected_kv[dit_kv_index_map[i]]
 
             x, distill_loss = block(x, c, enc_k=enc_k, enc_v=enc_v, stage=stage)
             total_distill_loss = total_distill_loss + distill_loss

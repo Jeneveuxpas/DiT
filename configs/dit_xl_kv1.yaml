@@ -14,18 +14,20 @@ log-every: 100
 
 # Encoder KV
 use-kv: true
-enc-type: vit_large_patch14_dinov2.lvd142m
+enc-type: dinov2-b
 enc-resolution: 224
-num-kv-layers: 1
-# enc-layer-indices: "23"   # optional: specify exact encoder layer
+enc-layer-indices: "12"    # 1-based, encoder layers for KV extraction
+dit-layer-indices: "4"     # 1-based, DiT blocks to inject encoder KV into
 kv-proj-type: linear
-kv-norm-type: layer
+kv-norm-type: none
 
 # Two-stage
-stage1-steps: 100000
+stage1-steps: 30000
 distill-coeff: 1.0
 
 # REPA
 proj-coeff: 0.5
-encoder-depth: 8
+encoder-depth: 10
 repa-loss: cosine
+repa-proj-type: mlp   # linear, mlp, or conv
+repa-proj-kernel-size: 1  # kernel size for conv (ignored for linear/mlp)

@@ -137,10 +137,17 @@ def build_encoder(enc_type, device):
 
 
 def get_enc_layer_indices(layer_indices_str, num_kv_layers):
-    """Parse encoder layer indices from string or generate defaults."""
+    """Parse encoder layer indices (1-based, like SIT) and convert to 0-based."""
     if layer_indices_str:
-        return [int(x) for x in layer_indices_str.split(",")]
+        return [int(x) - 1 for x in layer_indices_str.split(",")]
     return list(range(num_kv_layers))
+
+
+def parse_layer_indices(indices_str):
+    """Parse DiT layer indices (1-based, like SIT) and convert to 0-based. Returns None if not set."""
+    if indices_str:
+        return [int(x) - 1 for x in indices_str.split(",")]
+    return None
 
 
 #################################################################################
@@ -265,6 +272,17 @@ def main(args):
         enc_layer_indices = get_enc_layer_indices(args.enc_layer_indices, args.num_kv_layers)
         logger.info(f"Encoder KV layer indices: {enc_layer_indices}")
 
+        # Parse DiT injection layer indices
+        dit_kv_layer_indices = parse_layer_indices(args.dit_layer_indices)
+        if dit_kv_layer_indices is not None:
+            assert len(dit_kv_layer_indices) == len(enc_layer_indices), (
+                f"--dit-layer-indices length ({len(dit_kv_layer_indices)}) must match "
+                f"--enc-layer-indices length ({len(enc_layer_indices)})"
+            )
+            logger.info(f"DiT KV injection layer indices: {dit_kv_layer_indices}")
+        else:
+            logger.info(f"DiT KV injection layer indices: first {len(enc_layer_indices)} blocks (default)")
+
         # Build KV extractor
         kv_extractor = EncoderKVExtractor(encoder, enc_layer_indices)
     else:
@@ -273,6 +291,7 @@ def main(args):
         enc_dim = 1024
         enc_num_heads = 16
         enc_layer_indices = []
+        dit_kv_layer_indices = None
 
     # Load precomputed VAE latent statistics (SIT-style normalization):
     latents_stats_path = args.latents_stats_path
@@ -295,11 +314,14 @@ def main(args):
         enc_dim=enc_dim,
         enc_num_heads=enc_num_heads,
         num_enc_kv_layers=len(enc_layer_indices) if args.use_kv else 0,
+        dit_kv_layer_indices=dit_kv_layer_indices if args.use_kv else None,
         kv_proj_type=args.kv_proj_type,
         kv_norm_type=args.kv_norm_type,
         encoder_depth=args.encoder_depth,
         repa_out_dim=enc_dim,
-        repa_proj_layers=2,
+        repa_proj_type=args.repa_proj_type,
+        repa_projector_dim=args.repa_projector_dim,
+        repa_proj_kernel_size=args.repa_proj_kernel_size,
     )
     ema = deepcopy(model).to(device)
     requires_grad(ema, False)
@@ -571,9 +593,12 @@ if __name__ == "__main__":
     parser.add_argument("--enc-resolution", type=int, default=224,
                         help="Encoder input resolution (DINOv2 default: 224)")
     parser.add_argument("--enc-layer-indices", type=str, default=None,
-                        help="Comma-separated encoder layer indices for KV extraction (e.g., '20,21,22,23')")
+                        help="Comma-separated encoder layer indices for KV extraction, 1-based like SIT (e.g., '20,23')")
     parser.add_argument("--num-kv-layers", type=int, default=4,
                         help="Number of encoder layers to use for KV (used if --enc-layer-indices not set)")
+    parser.add_argument("--dit-layer-indices", type=str, default=None,
+                        help="Comma-separated DiT block indices to inject encoder KV into, 1-based like SIT (e.g., '4,8'). "
+                             "Must match length of enc-layer-indices. Default: first N DiT blocks.")
     parser.add_argument("--kv-proj-type", type=str, choices=["linear", "mlp"], default="linear",
                         help="Projection type for encoder KV")
     parser.add_argument("--kv-norm-type", type=str, choices=["layer", "zscore", "none"], default="layer",
@@ -592,6 +617,12 @@ if __name__ == "__main__":
                         help="DiT layer index at which to extract features for REPA projector")
     parser.add_argument("--repa-loss", type=str, choices=["cosine", "mse"], default="cosine",
                         help="REPA projection loss type")
+    parser.add_argument("--repa-proj-type", type=str, choices=["linear", "mlp", "conv"], default="linear",
+                        help="REPA projector architecture: linear (1-layer), mlp (3-layer SiLU), or conv (Conv2d on H×W grid)")
+    parser.add_argument("--repa-projector-dim", type=int, default=2048,
+                        help="Hidden dim for mlp projector (ignored for linear/conv)")
+    parser.add_argument("--repa-proj-kernel-size", type=int, default=1, choices=[1, 3, 5, 7],
+                        help="Kernel size for conv projector (ignored for linear/mlp)")
 
     # Apply config defaults (CLI args take priority)
     if _config_defaults:
