@@ -341,12 +341,12 @@ def main(args):
         repa_projector_dim=args.repa_projector_dim,
         repa_proj_kernel_size=args.repa_proj_kernel_size,
     )
-    ema = deepcopy(model).to(device)
-    requires_grad(ema, False)
     model = model.to(device)
     if args.compile:
         logger.info("Compiling model with torch.compile...")
         model = torch.compile(model)
+    ema = deepcopy(model).to(device)
+    requires_grad(ema, False)
     model = DDP(model, device_ids=[rank])
     diffusion = create_diffusion(timestep_respacing="")
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
