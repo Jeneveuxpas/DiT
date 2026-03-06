@@ -635,9 +635,12 @@ if __name__ == "__main__":
     parser.add_argument("--repa-proj-kernel-size", type=int, default=1, choices=[1, 3, 5, 7],
                         help="Kernel size for conv projector (ignored for linear/mlp)")
 
-    # Apply config defaults (CLI args take priority)
-    if _config_defaults:
-        parser.set_defaults(**_config_defaults)
-
     args = parser.parse_args()
+
+    # Apply config values on top of CLI args (config has highest priority)
+    if _config_defaults:
+        for k, v in _config_defaults.items():
+            if hasattr(args, k):
+                setattr(args, k, v)
+
     main(args)

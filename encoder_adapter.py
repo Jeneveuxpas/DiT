@@ -85,6 +85,8 @@ class EncoderKVExtractor(nn.Module):
 
     def _make_hook(self, layer_idx):
         """Create a hook function that captures K/V from an attention layer."""
+        num_prefix = getattr(self.encoder, 'num_prefix_tokens', 0)
+
         def hook_fn(module, input, output):
             # timm's Attention module: input[0] is x after norm
             x = input[0]
@@ -93,7 +95,9 @@ class EncoderKVExtractor(nn.Module):
             qkv = module.qkv(x).reshape(B, N, 3, module.num_heads, C // module.num_heads)
             qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, num_heads, N, head_dim)
             q, k, v = qkv.unbind(0)  # each: (B, num_heads, N, head_dim)
-            self._kv_cache[layer_idx] = (k.detach(), v.detach())
+            # Strip prefix tokens (e.g. CLS) to keep only patch tokens
+            self._kv_cache[layer_idx] = (k[:, :, num_prefix:, :].detach(),
+                                         v[:, :, num_prefix:, :].detach())
         return hook_fn
 
     @torch.no_grad()
