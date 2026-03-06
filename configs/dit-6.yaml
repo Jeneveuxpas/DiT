@@ -1,0 +1,33 @@
+# DiT-XL/2 with Attention Scaffolding (1 KV layer)
+# Usage: ./launch.sh --config configs/dit_xl_kv1.yaml --exp-name dit_xl_kv1 --gpu 0,1,2,3 --num-gpus 4
+
+# Model
+model: DiT-XL/2
+image-size: 256
+num-classes: 1000
+
+# Training
+epochs: 20
+global-batch-size: 256
+ckpt-every: 50000
+log-every: 100
+
+# Encoder KV
+use-kv: true
+enc-type: dinov2-b
+enc-resolution: 224
+enc-layer-indices: "12"    # 1-based, encoder layers for KV extraction
+dit-layer-indices: "6"     # 1-based, DiT blocks to inject encoder KV into
+kv-proj-type: linear
+kv-norm-type: none
+
+# Two-stage
+stage1-steps: 30000
+distill-coeff: 1.0
+
+# REPA
+proj-coeff: 0.5
+encoder-depth: 10
+repa-loss: cosine
+repa-proj-type: mlp   # linear, mlp, or conv
+repa-proj-kernel-size: 1  # kernel size for conv (ignored for linear/mlp)

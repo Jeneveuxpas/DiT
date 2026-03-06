@@ -7,7 +7,7 @@ image-size: 256
 num-classes: 1000
 
 # Training
-epochs: 1400
+epochs: 20
 global-batch-size: 256
 ckpt-every: 50000
 log-every: 100
@@ -17,7 +17,7 @@ use-kv: true
 enc-type: dinov2-b
 enc-resolution: 224
 enc-layer-indices: "12"    # 1-based, encoder layers for KV extraction
-dit-layer-indices: "4"     # 1-based, DiT blocks to inject encoder KV into
+dit-layer-indices: "5"     # 1-based, DiT blocks to inject encoder KV into
 kv-proj-type: linear
 kv-norm-type: none
 
