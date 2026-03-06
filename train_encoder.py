@@ -32,6 +32,13 @@ import os
 
 import timm
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from tqdm import tqdm
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
 
 from models_encoder import DiT_EncoderKV_models
 from encoder_adapter import EncoderKVExtractor
@@ -401,11 +408,25 @@ def main(args):
     logger.info(f"Stage 1 steps: {args.stage1_steps}")
     logger.info(f"Distill coeff: {args.distill_coeff}, Proj coeff: {args.proj_coeff}")
 
+    # Initialize wandb (rank 0 only)
+    use_wandb = args.wandb and HAS_WANDB and rank == 0
+    if use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.exp_name,
+            config=vars(args),
+        )
+    elif args.wandb and not HAS_WANDB:
+        logger.warning("wandb not installed, skipping. Run: pip install wandb")
+
+    total_steps = args.epochs * len(loader)
+
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
 
-        for batch in loader:
+        pbar = tqdm(loader, desc=f"Epoch {epoch}", disable=(rank != 0))
+        for batch in pbar:
             # Unpack SIT-style batch: (raw_image, latent_moments, label)
             if len(batch) == 3:
                 raw_image, x, y = batch
@@ -531,6 +552,18 @@ def main(args):
                     f"Proj: {avg_proj:.4f}, Distill: {avg_distill:.4f}, "
                     f"Steps/Sec: {steps_per_sec:.2f}"
                 )
+                if rank == 0:
+                    pbar.set_postfix(loss=f"{avg_loss:.4f}", stage=stage, step=train_steps)
+                if use_wandb:
+                    wandb.log({
+                        "loss": avg_loss,
+                        "denoise_loss": avg_denoise,
+                        "proj_loss": avg_proj,
+                        "distill_loss": avg_distill,
+                        "steps_per_sec": steps_per_sec,
+                        "stage": stage,
+                        "epoch": epoch,
+                    }, step=train_steps)
                 running_loss = 0
                 running_denoise_loss = 0
                 running_proj_loss = 0
@@ -555,6 +588,8 @@ def main(args):
 
     model.eval()
     logger.info("Done!")
+    if use_wandb:
+        wandb.finish()
     if kv_extractor is not None:
         kv_extractor.remove_hooks()
     cleanup()
@@ -587,6 +622,9 @@ if __name__ == "__main__":
     parser.add_argument("--latents-stats-path", type=str, default="pretrained_models/sdvae-ft-mse-f8d4-latents-stats.pt",
                         help="Path to precomputed latent statistics (latents_scale, latents_bias)")
     parser.add_argument("--results-dir", type=str, default="results")
+    parser.add_argument("--exp-name", type=str, default=None, help="Experiment name (used for wandb run name)")
+    parser.add_argument("--wandb", action="store_true", help="Enable wandb logging")
+    parser.add_argument("--wandb-project", type=str, default="DiT-EncoderKV", help="wandb project name")
     parser.add_argument("--model", type=str, choices=list(DiT_EncoderKV_models.keys()), default="DiT-XL/2")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=1000)

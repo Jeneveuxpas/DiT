@@ -3,7 +3,7 @@
 # DiT Encoder KV — 统一启动脚本（训练 + 评估）
 #
 # 用法:
-#   ./launch.sh --exp-name my_exp --data-dir /path/to/data
+#   ./launch.sh --config configs/dit-3.yaml --exp-name dit-3 --gpu 0,1 --num-gpus 2 --wandb
 #   ./launch.sh --exp-name xl_kv1 --model-size XL --gpu 4,5,6,7 --num-gpus 4
 #   ./launch.sh --exp-name xl_kv1 --gpu 4,5,6,7 --num-gpus 4 --eval-only
 #   ./launch.sh --exp-name xl_kv1 --gpu 4,5,6,7 --num-gpus 4 --resume-step 200000
@@ -53,6 +53,10 @@ PROJ_COEFF="${PROJ_COEFF:-0.5}"
 ENCODER_DEPTH="${ENCODER_DEPTH:-8}"
 REPA_LOSS="${REPA_LOSS:-cosine}"
 
+# wandb
+USE_WANDB="${USE_WANDB:-false}"
+WANDB_PROJECT="${WANDB_PROJECT:-DiT-EncoderKV}"
+
 # 评估
 NUM_FID_SAMPLES="${NUM_FID_SAMPLES:-50000}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-32}"
@@ -88,6 +92,8 @@ while [[ $# -gt 0 ]]; do
         --eval-only)        EVAL_ONLY="true";       shift ;;
         --skip-eval)        SKIP_EVAL="true";       shift ;;
         --no-kv)            USE_KV="false";         shift ;;
+        --wandb)            USE_WANDB="true";       shift ;;
+        --wandb-project)    WANDB_PROJECT="$2";     shift 2 ;;
         *)
             echo "未知参数: $1"
             exit 1
@@ -101,20 +107,22 @@ if [ -z "$EXP_NAME" ]; then
     exit 1
 fi
 
-# ── 若提供 config，从中读取 model（覆盖 MODEL_SIZE）─────────────────────────────
+# ── 若提供 config，从中读取关键字段（覆盖 shell 默认值）────────────────────────
 if [ -n "$CONFIG" ]; then
     if [ ! -f "$CONFIG" ]; then
         echo "config 文件不存在: $CONFIG"
         exit 1
     fi
-    # 从 yaml 中提取 model 字段
-    _YAML_MODEL=$(python3 -c "
+    _YAML=$(python3 -c "
 import yaml, sys
 d = yaml.safe_load(open('$CONFIG')) or {}
 print(d.get('model', ''))
-" 2>/dev/null || grep "^model:" "$CONFIG" | awk '{print $2}' | tr -d '"')
+print(d.get('enc-type', ''))
+" 2>/dev/null || echo -e "\n")
+    _YAML_MODEL=$(echo "$_YAML" | sed -n '1p')
+    _YAML_ENC_TYPE=$(echo "$_YAML" | sed -n '2p')
+
     if [ -n "$_YAML_MODEL" ]; then
-        # 从 model 名推断 MODEL_SIZE（如 DiT-XL/2 → XL）
         case "$_YAML_MODEL" in
             DiT-XL*) MODEL_SIZE="XL" ;;
             DiT-L*)  MODEL_SIZE="L"  ;;
@@ -122,6 +130,10 @@ print(d.get('model', ''))
             DiT-S*)  MODEL_SIZE="S"  ;;
         esac
         echo "从 config 检测到模型: ${_YAML_MODEL} (MODEL_SIZE=${MODEL_SIZE})"
+    fi
+    if [ -n "$_YAML_ENC_TYPE" ]; then
+        ENC_TYPE="$_YAML_ENC_TYPE"
+        echo "从 config 检测到 enc-type: ${ENC_TYPE}"
     fi
 fi
 
@@ -186,6 +198,8 @@ if [ "$EVAL_ONLY" = "false" ]; then
     [ -n "$CONFIG" ]            && TRAIN_ARGS+=(--config "${CONFIG}")
     [ "$USE_KV" = "true" ]      && TRAIN_ARGS+=(--use-kv)
     [ -n "$ENC_LAYER_INDICES" ] && TRAIN_ARGS+=(--enc-layer-indices "${ENC_LAYER_INDICES}")
+    [ -n "$EXP_NAME" ]          && TRAIN_ARGS+=(--exp-name "${EXP_NAME}")
+    [ "$USE_WANDB" = "true" ]   && TRAIN_ARGS+=(--wandb --wandb-project "${WANDB_PROJECT}")
 
     # resume 需要找到已有的 checkpoint 路径
     if [ "$RESUME_STEP" -gt 0 ]; then
