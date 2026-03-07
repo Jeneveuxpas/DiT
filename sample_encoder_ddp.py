@@ -140,10 +140,11 @@ def main(args):
             model_kwargs = dict(y=y)
             sample_fn = model.forward
 
-        samples = diffusion.p_sample_loop(
-            sample_fn, z.shape, z, clip_denoised=False,
-            model_kwargs=model_kwargs, progress=False, device=device
-        )
+        with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+            samples = diffusion.p_sample_loop(
+                sample_fn, z.shape, z, clip_denoised=False,
+                model_kwargs=model_kwargs, progress=False, device=device
+            )
         if using_cfg:
             samples, _ = samples.chunk(2, dim=0)
 
