@@ -37,8 +37,7 @@ def main():
     parser.add_argument("--num_steps", default=250, type=int)
     args = parser.parse_args()
 
-    if not os.path.exists(args.save_path):
-        os.mkdir(args.save_path)
+    os.makedirs(args.save_path, exist_ok=True)
 
 
     config = tf.ConfigProto(
@@ -74,10 +73,8 @@ def main():
     print("Precision:", prec)
     print("Recall:", recall)
 
-    if args.cfg_cond:
-        file_path = args.save_path + str(args.num_steps) + str(args.step) + str(args.cfg) + str(args.gh) + str(args.cls_cfg)+ "cfg_cond_true.txt"
-    else:
-        file_path = args.save_path + str(args.num_steps) + str(args.step) + str(args.cfg) + str(args.gh) + str(args.cls_cfg)+ "cfg_cond_false.txt"
+    suffix = "cfg_cond_true.txt" if args.cfg_cond else "cfg_cond_false.txt"
+    file_path = os.path.join(args.save_path, f"{args.num_steps}_{args.step}_cfg{args.cfg}_gh{args.gh}_cls{args.cls_cfg}_{suffix}")
     with open(file_path, "w") as file:
         file.write("Inception Score: {}\n".format(Inception_Score))
         file.write("FID: {}\n".format(FID))

@@ -61,7 +61,7 @@ WANDB_PROJECT="${WANDB_PROJECT:-DiT-EncoderKV}"
 NUM_FID_SAMPLES="${NUM_FID_SAMPLES:-50000}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-256}"
 NUM_SAMPLING_STEPS="${NUM_SAMPLING_STEPS:-250}"
-CFG_SCALE="${CFG_SCALE:-1.5}"
+CFG_SCALE="${CFG_SCALE:-1.0}"
 VAE="${VAE:-mse}"
 REF_BATCH="${REF_BATCH:-/workspace/SIT/VIRTUAL_imagenet256_labeled.npz}"
 
@@ -212,8 +212,8 @@ if [ "$EVAL_ONLY" = "false" ]; then
         fi
     fi
 
-    torchrun --standalone --nproc_per_node="${NUM_GPUS}" --master_port="${MASTER_PORT}" \
-        train_encoder.py "${TRAIN_ARGS[@]}"
+    # torchrun --standalone --nproc_per_node="${NUM_GPUS}" --master_port="${MASTER_PORT}" \
+    #     train_encoder.py "${TRAIN_ARGS[@]}"
 
     echo "================================================"
     echo "训练完成！"
@@ -267,21 +267,21 @@ if [ "$SKIP_EVAL" = "false" ]; then
         SAMPLE_DIR_BASE="${CKPT_DIR}"
 
         # 生成样本（多 GPU）
-        torchrun --standalone --nproc_per_node=${NUM_GPUS} --master_port=${EVAL_MASTER_PORT} \
-            sample_encoder_ddp.py \
-            --model ${MODEL} \
-            --ckpt ${CKPT_PATH} \
-            --image-size ${IMAGE_SIZE} \
-            --num-enc-kv-layers ${NUM_KV_LAYERS} \
-            --enc-dim ${ENC_DIM} \
-            --enc-num-heads ${ENC_NUM_HEADS} \
-            --encoder-depth ${ENCODER_DEPTH} \
-            --vae ${VAE} \
-            --cfg-scale ${CFG_SCALE} \
-            --num-sampling-steps ${NUM_SAMPLING_STEPS} \
-            --num-fid-samples ${NUM_FID_SAMPLES} \
-            --per-proc-batch-size ${EVAL_BATCH_SIZE} \
-            --sample-dir ${SAMPLE_DIR_BASE}
+        # torchrun --standalone --nproc_per_node=${NUM_GPUS} --master_port=${EVAL_MASTER_PORT} \
+        #     sample_encoder_ddp.py \
+        #     --model ${MODEL} \
+        #     --ckpt ${CKPT_PATH} \
+        #     --image-size ${IMAGE_SIZE} \
+        #     --num-enc-kv-layers ${NUM_KV_LAYERS} \
+        #     --enc-dim ${ENC_DIM} \
+        #     --enc-num-heads ${ENC_NUM_HEADS} \
+        #     --encoder-depth ${ENCODER_DEPTH} \
+        #     --vae ${VAE} \
+        #     --cfg-scale ${CFG_SCALE} \
+        #     --num-sampling-steps ${NUM_SAMPLING_STEPS} \
+        #     --num-fid-samples ${NUM_FID_SAMPLES} \
+        #     --per-proc-batch-size ${EVAL_BATCH_SIZE} \
+        #     --sample-dir ${SAMPLE_DIR_BASE}
 
         # 找到生成的 npz 文件
         MODEL_STR="${MODEL/\//-}"
@@ -297,7 +297,11 @@ if [ "$SKIP_EVAL" = "false" ]; then
             echo "计算 FID..."
             python evaluations/evaluator.py \
                 --ref_batch ${REF_BATCH} \
-                --sample_batch ${SAMPLE_NPZ}
+                --sample_batch ${SAMPLE_NPZ} \
+                --save_path ${SAVE_PATH}/checkpoints \
+                --step ${STEP} \
+                --num_steps ${NUM_SAMPLING_STEPS} \
+                --cfg ${CFG_SCALE}
         else
             echo "未找到 npz 文件，请检查 ${SAMPLE_DIR_BASE}"
         fi
