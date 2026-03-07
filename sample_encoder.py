@@ -16,6 +16,8 @@ from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 from models_encoder import DiT_EncoderKV_models
 import argparse
+import os
+import warnings
 
 
 def find_model(model_path):
@@ -59,6 +61,20 @@ def main(args):
     diffusion = create_diffusion(str(args.num_sampling_steps))
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
 
+    # Load latent normalization stats (must match training)
+    if args.latents_stats_path and os.path.exists(args.latents_stats_path):
+        latents_stats = torch.load(args.latents_stats_path, map_location=device, weights_only=False)
+        latents_scale = latents_stats['latents_scale'].to(device).view(1, -1, 1, 1)
+        latents_bias = latents_stats['latents_bias'].to(device).view(1, -1, 1, 1)
+        print(f"Loaded latent stats from {args.latents_stats_path}")
+    else:
+        latents_scale = None
+        latents_bias = None
+        warnings.warn(
+            f"Latent stats not found at '{args.latents_stats_path}'. "
+            "Falling back to 1/0.18215 scaling. This may produce bad results if training used SIT-style normalization."
+        )
+
     # Labels to condition the model with:
     class_labels = [207, 360, 387, 974, 88, 979, 417, 279]
 
@@ -79,7 +95,11 @@ def main(args):
         model_kwargs=model_kwargs, progress=True, device=device
     )
     samples, _ = samples.chunk(2, dim=0)
-    samples = vae.decode(samples / 0.18215).sample
+    # Un-normalize from SIT-style latent space before VAE decoding
+    if latents_scale is not None:
+        samples = vae.decode(samples / latents_scale + latents_bias).sample
+    else:
+        samples = vae.decode(samples / 0.18215).sample
 
     # Save and display images:
     save_image(samples, "sample_encoder.png", nrow=4, normalize=True, value_range=(-1, 1))
@@ -105,5 +125,8 @@ if __name__ == "__main__":
                         help="Encoder number of attention heads (must match training)")
     parser.add_argument("--encoder-depth", type=int, default=8,
                         help="DiT layer for REPA projector (must match training)")
+    parser.add_argument("--latents-stats-path", type=str,
+                        default="pretrained_models/sdvae-ft-mse-f8d4-latents-stats.pt",
+                        help="Path to latent normalization stats (must match training)")
     args = parser.parse_args()
     main(args)

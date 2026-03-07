@@ -246,7 +246,7 @@ def encoder_preprocess(raw_image, resolution=256):
     x = (x - mean) / std
     # Interpolate to encoder resolution if needed
     if x.shape[-1] != resolution or x.shape[-2] != resolution:
-        x = torch.nn.functional.interpolate(x, size=(resolution, resolution), mode='bilinear', align_corners=False)
+        x = torch.nn.functional.interpolate(x, size=(resolution, resolution), mode='bicubic', align_corners=False)
     return x
 
 
@@ -324,10 +324,27 @@ def main(args):
         latents_scale = latents_stats['latents_scale'].to(device).view(1, -1, 1, 1)
         latents_bias = latents_stats['latents_bias'].to(device).view(1, -1, 1, 1)
         logger.info(f"Loaded latent stats from {latents_stats_path}")
+    elif latents_stats_path:
+        raise FileNotFoundError(
+            f"Latent stats file not found: {latents_stats_path}\n"
+            f"Copy it from SIT: cp SIT/pretrained_models/sdvae-ft-mse-f8d4-latents-stats.pt "
+            f"DiT/pretrained_models/sdvae-ft-mse-f8d4-latents-stats.pt"
+        )
     else:
-        latents_scale = 1.0
-        latents_bias = 0.0
-        logger.info("No latent stats file provided, using identity normalization")
+        raise ValueError(
+            "--latents-stats-path must be provided. "
+            "Latent normalization is required for correct training."
+        )
+
+    # Validate encoder_depth before building model
+    _model_depths = {'DiT-XL': 28, 'DiT-L': 24, 'DiT-B': 12, 'DiT-S': 12}
+    _model_key = args.model.split('/')[0]  # e.g. 'DiT-XL'
+    _depth = _model_depths.get(_model_key)
+    if _depth is not None and args.encoder_depth > _depth:
+        raise ValueError(
+            f"encoder_depth ({args.encoder_depth}) > model depth ({_depth}) for {args.model}. "
+            f"REPA features will never be extracted. Set --encoder-depth <= {_depth}."
+        )
 
     # Create model:
     assert args.image_size % 8 == 0
@@ -482,7 +499,13 @@ def main(args):
                 enc_kv_list = None
                 enc_features = None
 
-                if encoder is not None and raw_image is not None:
+                if encoder is not None:
+                    if raw_image is None:
+                        raise RuntimeError(
+                            "Encoder is active (use_kv or proj_coeff > 0) but the dataset did not "
+                            "return raw images. Use HFImgLatentDataset or ImageFolderLatentDataset "
+                            "which return (raw_image, latent, label) triples."
+                        )
                     # Preprocess raw uint8 images for DINOv2
                     raw_image_enc = encoder_preprocess(raw_image, resolution=args.enc_resolution)
 
@@ -497,10 +520,19 @@ def main(args):
                             enc_features = features
                         # Get captured KV from hooks
                         enc_kv_list = []
+                        missing_indices = []
                         for idx in enc_layer_indices:
                             if idx in kv_extractor._kv_cache:
                                 enc_kv_list.append(kv_extractor._kv_cache[idx])
+                            else:
+                                missing_indices.append(idx)
                         kv_extractor._kv_cache = {}
+                        if missing_indices:
+                            raise RuntimeError(
+                                f"KV hook did not capture layers: {missing_indices} "
+                                f"(captured {len(enc_kv_list)}/{len(enc_layer_indices)}). "
+                                f"Check that enc_layer_indices {enc_layer_indices} are valid for this encoder."
+                            )
                     elif args.use_kv:
                         enc_kv_list = kv_extractor(raw_image_enc)
                     elif args.proj_coeff > 0:
@@ -513,10 +545,12 @@ def main(args):
             # Determine stage:
             stage = 1 if train_steps < args.stage1_steps else 2
 
-            # Freeze projection heads at the moment of Stage 2 transition
-            if train_steps == args.stage1_steps and model.module.kv_projection is not None:
-                requires_grad(model.module.kv_projection, False)
-                logger.info(f"Step {train_steps}: transitioned to Stage 2, frozen kv_projection")
+            # Freeze kv_projection when entering Stage 2 (handles both first-time and resume)
+            if stage == 2 and model.module.kv_projection is not None:
+                kv_proj = model.module.kv_projection
+                if any(p.requires_grad for p in kv_proj.parameters()):
+                    requires_grad(kv_proj, False)
+                    logger.info(f"Step {train_steps}: kv_projection frozen (stage 2)")
 
             # Forward pass through diffusion:
             t = torch.randint(0, diffusion.num_timesteps, (x_latent.shape[0],), device=device)
@@ -536,6 +570,17 @@ def main(args):
 
                 # Compute REPA projection loss:
                 proj_loss = torch.tensor(0.0, device=device)
+                if proj_loss_fn is not None:
+                    if enc_features is None:
+                        raise RuntimeError(
+                            "proj_coeff > 0 but enc_features is None. "
+                            "Check that the encoder ran and returned patch tokens."
+                        )
+                    if zs is None:
+                        raise RuntimeError(
+                            "proj_coeff > 0 but model._zs is None. "
+                            f"Check that encoder_depth ({args.encoder_depth}) <= model depth."
+                        )
                 if proj_loss_fn is not None and enc_features is not None and zs is not None:
                     if enc_features.shape[1] != zs.shape[1]:
                         B, N_enc, D_enc = enc_features.shape
@@ -556,10 +601,13 @@ def main(args):
             opt.zero_grad()
             if scaler is not None:
                 scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scaler.step(opt)
                 scaler.update()
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 opt.step()
             update_ema(ema, model.module)
 
@@ -662,7 +710,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None,
-                        help="Path to YAML config file (values overridden by CLI args)")
+                        help="Path to YAML config file (config values override CLI args)")
     # Data args (SIT-compatible):
     parser.add_argument("--data-dir", type=str, required=True,
                         help="Root data directory containing imagenet-latents-images/ and imagenet-latents-sdvae-ft-mse-f8d4/")
@@ -729,10 +777,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Apply config values on top of CLI args (config has highest priority)
+    # Config file has highest priority: apply AFTER parse_args to override CLI values.
     if _config_defaults:
         for k, v in _config_defaults.items():
             if hasattr(args, k):
                 setattr(args, k, v)
+            else:
+                raise ValueError(f"Unknown config key '{k.replace('_', '-')}' in {_pre_args.config}")
 
     main(args)

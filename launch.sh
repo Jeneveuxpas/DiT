@@ -277,7 +277,8 @@ if [ "$SKIP_EVAL" = "false" ]; then
             --num-sampling-steps ${NUM_SAMPLING_STEPS} \
             --num-fid-samples ${NUM_FID_SAMPLES} \
             --per-proc-batch-size ${EVAL_BATCH_SIZE} \
-            --sample-dir ${SAMPLE_DIR_BASE}
+            --sample-dir ${SAMPLE_DIR_BASE} \
+            --latents-stats-path ${LATENTS_STATS}
 
         # 找到生成的 npz 文件
         MODEL_STR="${MODEL/\//-}"

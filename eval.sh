@@ -40,10 +40,11 @@ CFG_SCALE="${CFG_SCALE:-1.0}"
 NUM_SAMPLING_STEPS="${NUM_SAMPLING_STEPS:-250}"
 NUM_FID_SAMPLES="${NUM_FID_SAMPLES:-50000}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-256}"
-GLOBAL_SEED="${GLOBAL_SEED:-0}"
+GLOBAL_SEED="${GLOBAL_SEED:-0}" 
 
 # 评估
 REF_BATCH="${REF_BATCH:-/workspace/SIT/VIRTUAL_imagenet256_labeled.npz}"
+LATENTS_STATS="${LATENTS_STATS:-pretrained_models/sdvae-ft-mse-f8d4-latents-stats.pt}"
 
 # 模式开关
 FID_ONLY="${FID_ONLY:-false}"   # true = 跳过生成，直接找已有 npz 计算 FID
@@ -69,6 +70,7 @@ while [[ $# -gt 0 ]]; do
         --num-fid-samples)   NUM_FID_SAMPLES="$2";  shift 2 ;;
         --eval-batch-size)   EVAL_BATCH_SIZE="$2";  shift 2 ;;
         --ref-batch)         REF_BATCH="$2";        shift 2 ;;
+        --latents-stats)     LATENTS_STATS="$2";    shift 2 ;;
         --fid-only)          FID_ONLY="true";       shift ;;
         *)
             echo "未知参数: $1"
@@ -128,7 +130,7 @@ echo "steps:    ${EVAL_STEPS}"
 echo "cfg:      ${CFG_SCALE}  steps: ${NUM_SAMPLING_STEPS}"
 echo "================================================"
 
-MASTER_PORT=$((29500 + RANDOM % 1000))
+MASTER_PORT=$((20000 + RANDOM % 10000))
 MODEL_STR="${MODEL/\//-}"
 
 IFS=',' read -ra STEPS_ARRAY <<< "$EVAL_STEPS"
@@ -182,7 +184,8 @@ for RAW_STEP in "${STEPS_ARRAY[@]}"; do
                 --num-fid-samples "${NUM_FID_SAMPLES}" \
                 --per-proc-batch-size "${EVAL_BATCH_SIZE}" \
                 --global-seed "${GLOBAL_SEED}" \
-                --sample-dir "${SAMPLE_DIR_BASE}"
+                --sample-dir "${SAMPLE_DIR_BASE}" \
+                --latents-stats-path "${LATENTS_STATS}"
             MASTER_PORT=$((MASTER_PORT + 1))
         fi
     fi

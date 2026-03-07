@@ -19,6 +19,7 @@ from PIL import Image
 import numpy as np
 import math
 import argparse
+import warnings
 
 
 def find_model(model_path):
@@ -103,6 +104,25 @@ def main(args):
     diffusion = create_diffusion(str(args.num_sampling_steps))
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
 
+    # Load latent normalization stats (must match training)
+    latents_stats_path = getattr(train_args, 'latents_stats_path', None) if train_args else None
+    if latents_stats_path is None:
+        latents_stats_path = args.latents_stats_path
+    if latents_stats_path and os.path.exists(latents_stats_path):
+        latents_stats = torch.load(latents_stats_path, map_location=device, weights_only=False)
+        latents_scale = latents_stats['latents_scale'].to(device).view(1, -1, 1, 1)
+        latents_bias = latents_stats['latents_bias'].to(device).view(1, -1, 1, 1)
+        if rank == 0:
+            print(f"Loaded latent stats from {latents_stats_path}")
+    else:
+        latents_scale = None
+        latents_bias = None
+        if rank == 0:
+            warnings.warn(
+                f"Latent stats not found at '{latents_stats_path}'. "
+                "Falling back to 1/0.18215 scaling. This may produce bad FID if training used SIT-style normalization."
+            )
+
     assert args.cfg_scale >= 1.0
     using_cfg = args.cfg_scale > 1.0
 
@@ -148,7 +168,11 @@ def main(args):
         if using_cfg:
             samples, _ = samples.chunk(2, dim=0)
 
-        samples = vae.decode(samples / 0.18215).sample
+        # Un-normalize from SIT-style latent space before VAE decoding
+        if latents_scale is not None:
+            samples = vae.decode(samples / latents_scale + latents_bias).sample
+        else:
+            samples = vae.decode(samples / 0.18215).sample
         samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
 
         for i, sample in enumerate(samples):
@@ -184,5 +208,8 @@ if __name__ == "__main__":
     parser.add_argument("--per-proc-batch-size", type=int, default=32)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--sample-dir", type=str, default="samples")
+    parser.add_argument("--latents-stats-path", type=str,
+                        default="pretrained_models/sdvae-ft-mse-f8d4-latents-stats.pt",
+                        help="Path to latent normalization stats (must match training)")
     args = parser.parse_args()
     main(args)
