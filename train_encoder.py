@@ -347,7 +347,7 @@ def main(args):
         model = torch.compile(model)
     ema = deepcopy(model).to(device)
     requires_grad(ema, False)
-    model = DDP(model, device_ids=[rank])
+    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
     diffusion = create_diffusion(timestep_respacing="")
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
