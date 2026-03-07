@@ -285,6 +285,9 @@ def main(args):
     if args.use_kv or args.proj_coeff > 0:
         encoder, enc_dim, enc_num_heads = build_encoder(args.enc_type, device, img_size=args.enc_resolution)
         logger.info(f"Encoder: {args.enc_type}, dim={enc_dim}, heads={enc_num_heads}")
+        # Save to args so checkpoint records the actual encoder dims
+        args.enc_dim = enc_dim
+        args.enc_num_heads = enc_num_heads
 
         # Parse layer indices for KV extraction
         enc_layer_indices = get_enc_layer_indices(args.enc_layer_indices, args.num_kv_layers)

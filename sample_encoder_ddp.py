@@ -62,10 +62,17 @@ def main(args):
     # Load checkpoint and recover training args for architecture reconstruction
     state_dict, train_args = find_model(args.ckpt)
 
+    # enc_type → (dim, num_heads) fallback for old checkpoints without enc_dim saved
+    _ENC_DIMS = {
+        "dinov2-s": (384, 6), "dinov2-b": (768, 12),
+        "dinov2-l": (1024, 16), "dinov2-g": (1536, 24),
+    }
     # Use saved training args to reconstruct the exact same architecture
     latent_size = args.image_size // 8
-    enc_dim       = getattr(train_args, 'enc_dim',            args.enc_dim)       if train_args else args.enc_dim
-    enc_num_heads = getattr(train_args, 'enc_num_heads',      args.enc_num_heads) if train_args else args.enc_num_heads
+    _enc_type = getattr(train_args, 'enc_type', None) if train_args else None
+    _fallback_dim, _fallback_heads = _ENC_DIMS.get(_enc_type, (args.enc_dim, args.enc_num_heads))
+    enc_dim       = getattr(train_args, 'enc_dim',       _fallback_dim)   if train_args else _fallback_dim
+    enc_num_heads = getattr(train_args, 'enc_num_heads', _fallback_heads) if train_args else _fallback_heads
     enc_layer_indices = getattr(train_args, 'enc_layer_indices', None)            if train_args else None
     num_enc_kv_layers = len(enc_layer_indices.split(',')) if enc_layer_indices else args.num_enc_kv_layers
     kv_proj_type  = getattr(train_args, 'kv_proj_type',       'linear')           if train_args else 'linear'
