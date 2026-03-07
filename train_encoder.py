@@ -341,6 +341,16 @@ def main(args):
         repa_projector_dim=args.repa_projector_dim,
         repa_proj_kernel_size=args.repa_proj_kernel_size,
     )
+    # Resume from checkpoint (load before compile so state_dict keys match)
+    if args.resume_step > 0:
+        ckpt_path = os.path.join(args.results_dir, args.exp_name, "checkpoints",
+                                 f"{args.resume_step:07d}.pt")
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(ckpt["model"])
+        logger.info(f"Loaded model from {ckpt_path}")
+
     model = model.to(device)
     if args.compile:
         logger.info("Compiling model with torch.compile...")
@@ -348,6 +358,13 @@ def main(args):
     ema = deepcopy(model).to(device)
     requires_grad(ema, False)
     model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+
+    # Restore EMA and optimizer after DDP (opt needs DDP parameters)
+    if args.resume_step > 0:
+        raw_ema = ema
+        if hasattr(ema, '_orig_mod'):
+            raw_ema = ema._orig_mod
+        raw_ema.load_state_dict(ckpt["ema"])
     diffusion = create_diffusion(timestep_respacing="")
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -364,6 +381,9 @@ def main(args):
 
     # Setup optimizer:
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    if args.resume_step > 0:
+        opt.load_state_dict(ckpt["opt"])
+        logger.info(f"Resumed optimizer state from step {args.resume_step}")
 
     # Setup data (SIT-compatible: precomputed latents + raw images):
     if HAS_HF_DATASETS:
@@ -400,12 +420,13 @@ def main(args):
     logger.info(f"Dataset contains {len(train_dataset):,} images ({args.data_dir})")
 
     # Prepare models for training:
-    update_ema(ema, model.module, decay=0)
+    if args.resume_step == 0:
+        update_ema(ema, model.module, decay=0)
     model.train()
     ema.eval()
 
     # Training variables:
-    train_steps = 0
+    train_steps = args.resume_step
     log_steps = 0
     running_loss = 0
     running_denoise_loss = 0
@@ -428,9 +449,10 @@ def main(args):
     elif args.wandb and not HAS_WANDB:
         logger.warning("wandb not installed, skipping. Run: pip install wandb")
 
-    total_steps = args.epochs * len(loader)
+    steps_per_epoch = len(loader)
+    start_epoch = train_steps // steps_per_epoch
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
 
@@ -588,9 +610,16 @@ def main(args):
             # Save checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
                 if rank == 0:
+                    # Strip _orig_mod. prefix added by torch.compile
+                    raw_model = model.module
+                    if hasattr(raw_model, '_orig_mod'):
+                        raw_model = raw_model._orig_mod
+                    raw_ema = ema
+                    if hasattr(ema, '_orig_mod'):
+                        raw_ema = ema._orig_mod
                     checkpoint = {
-                        "model": model.module.state_dict(),
-                        "ema": ema.state_dict(),
+                        "model": raw_model.state_dict(),
+                        "ema": raw_ema.state_dict(),
                         "opt": opt.state_dict(),
                         "args": args,
                         "train_steps": train_steps,
@@ -651,6 +680,8 @@ if __name__ == "__main__":
                         help="Mixed precision training (fp16/bf16 recommended for speed)")
     parser.add_argument("--compile", action="store_true", help="torch.compile the model for speed")
     parser.add_argument("--ckpt-every", type=int, default=50_000)
+    parser.add_argument("--resume-step", type=int, default=0,
+                        help="Resume training from this step (loads checkpoint from results-dir/exp-name/checkpoints/STEP.pt)")
 
     # Encoder KV distillation args:
     parser.add_argument("--use-kv", action="store_true", help="Enable encoder KV injection")

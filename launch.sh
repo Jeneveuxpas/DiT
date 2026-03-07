@@ -201,18 +201,14 @@ if [ "$EVAL_ONLY" = "false" ]; then
     [ -n "$EXP_NAME" ]          && TRAIN_ARGS+=(--exp-name "${EXP_NAME}")
     [ "$USE_WANDB" = "true" ]   && TRAIN_ARGS+=(--wandb --wandb-project "${WANDB_PROJECT}")
 
-    # resume 需要找到已有的 checkpoint 路径
+    # resume
     if [ "$RESUME_STEP" -gt 0 ]; then
         RESUME_CKPT=$(printf "${SAVE_PATH}/checkpoints/%07d.pt" ${RESUME_STEP})
-        if [ ! -f "$RESUME_CKPT" ]; then
-            # 尝试 glob 找到对应 step 的 checkpoint 目录
-            RESUME_CKPT=$(ls results/*-${MODEL/\//-}-EncoderKV/checkpoints/$(printf "%07d" ${RESUME_STEP}).pt 2>/dev/null | head -1)
-        fi
-        if [ -n "$RESUME_CKPT" ] && [ -f "$RESUME_CKPT" ]; then
-            echo "从 checkpoint 恢复: ${RESUME_CKPT}"
-            # train_encoder.py 不直接支持 --resume-ckpt，可扩展
+        if [ -f "$RESUME_CKPT" ]; then
+            echo "从 checkpoint 恢复: ${RESUME_CKPT} (step ${RESUME_STEP})"
+            TRAIN_ARGS+=(--resume-step "${RESUME_STEP}")
         else
-            echo "警告: 未找到 step ${RESUME_STEP} 的 checkpoint，从头开始训练"
+            echo "警告: 未找到 checkpoint ${RESUME_CKPT}，从头开始训练"
         fi
     fi
 

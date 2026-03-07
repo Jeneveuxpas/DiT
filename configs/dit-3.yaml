@@ -7,9 +7,9 @@ image-size: 256
 num-classes: 1000
 
 # Training
-epochs: 20
+epochs: 2
 global-batch-size: 256
-ckpt-every: 10000
+ckpt-every: 5000
 log-every: 100
 mixed-precision: fp16
 compile: true
@@ -24,7 +24,7 @@ kv-proj-type: linear
 kv-norm-type: none
 
 # Two-stage
-stage1-steps: 30000
+stage1-steps: 5000
 distill-coeff: 1.0
 
 # REPA
