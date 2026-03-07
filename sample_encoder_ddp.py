@@ -25,10 +25,10 @@ def find_model(model_path):
     """Load EMA weights preferentially from a train_encoder.py checkpoint."""
     checkpoint = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
     if "ema" in checkpoint:
-        return checkpoint["ema"]
+        return checkpoint["ema"], checkpoint.get("args", None)
     elif "model" in checkpoint:
-        return checkpoint["model"]
-    return checkpoint
+        return checkpoint["model"], checkpoint.get("args", None)
+    return checkpoint, None
 
 
 def create_npz_from_sample_folder(sample_dir, num=50_000):
@@ -59,19 +59,37 @@ def main(args):
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
 
-    # Load model (architecture must match training checkpoint)
+    # Load checkpoint and recover training args for architecture reconstruction
+    state_dict, train_args = find_model(args.ckpt)
+
+    # Use saved training args to reconstruct the exact same architecture
     latent_size = args.image_size // 8
+    enc_dim       = getattr(train_args, 'enc_dim',            args.enc_dim)       if train_args else args.enc_dim
+    enc_num_heads = getattr(train_args, 'enc_num_heads',      args.enc_num_heads) if train_args else args.enc_num_heads
+    enc_layer_indices = getattr(train_args, 'enc_layer_indices', None)            if train_args else None
+    num_enc_kv_layers = len(enc_layer_indices.split(',')) if enc_layer_indices else args.num_enc_kv_layers
+    kv_proj_type  = getattr(train_args, 'kv_proj_type',       'linear')           if train_args else 'linear'
+    kv_norm_type  = getattr(train_args, 'kv_norm_type',       'layer')            if train_args else 'layer'
+    encoder_depth = getattr(train_args, 'encoder_depth',      args.encoder_depth) if train_args else args.encoder_depth
+    repa_proj_type       = getattr(train_args, 'repa_proj_type',       'linear')  if train_args else 'linear'
+    repa_projector_dim   = getattr(train_args, 'repa_projector_dim',   2048)      if train_args else 2048
+    repa_proj_kernel_size = getattr(train_args, 'repa_proj_kernel_size', 1)       if train_args else 1
+
     model = DiT_EncoderKV_models[args.model](
         input_size=latent_size,
         num_classes=args.num_classes,
-        num_enc_kv_layers=args.num_enc_kv_layers,
-        enc_dim=args.enc_dim,
-        enc_num_heads=args.enc_num_heads,
-        encoder_depth=args.encoder_depth,
-        repa_out_dim=args.enc_dim,
+        num_enc_kv_layers=num_enc_kv_layers,
+        enc_dim=enc_dim,
+        enc_num_heads=enc_num_heads,
+        kv_proj_type=kv_proj_type,
+        kv_norm_type=kv_norm_type,
+        encoder_depth=encoder_depth,
+        repa_out_dim=enc_dim,
+        repa_proj_type=repa_proj_type,
+        repa_projector_dim=repa_projector_dim,
+        repa_proj_kernel_size=repa_proj_kernel_size,
     ).to(device)
 
-    state_dict = find_model(args.ckpt)
     model.load_state_dict(state_dict)
     model.eval()
 

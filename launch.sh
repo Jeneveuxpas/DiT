@@ -212,8 +212,8 @@ if [ "$EVAL_ONLY" = "false" ]; then
         fi
     fi
 
-    torchrun --standalone --nproc_per_node="${NUM_GPUS}" --master_port="${MASTER_PORT}" \
-        train_encoder.py "${TRAIN_ARGS[@]}"
+    # torchrun --standalone --nproc_per_node="${NUM_GPUS}" --master_port="${MASTER_PORT}" \
+    #     train_encoder.py "${TRAIN_ARGS[@]}"
 
     echo "================================================"
     echo "训练完成！"
