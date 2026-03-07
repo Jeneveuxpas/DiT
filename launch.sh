@@ -212,8 +212,8 @@ if [ "$EVAL_ONLY" = "false" ]; then
         fi
     fi
 
-    # torchrun --standalone --nproc_per_node="${NUM_GPUS}" --master_port="${MASTER_PORT}" \
-    #     train_encoder.py "${TRAIN_ARGS[@]}"
+    torchrun --standalone --nproc_per_node="${NUM_GPUS}" --master_port="${MASTER_PORT}" \
+        train_encoder.py "${TRAIN_ARGS[@]}"
 
     echo "================================================"
     echo "训练完成！"
@@ -224,12 +224,8 @@ fi
 if [ "$SKIP_EVAL" = "false" ]; then
     echo "开始评估..."
 
-    # 找实际的 checkpoint 目录（DiT 的 results_dir 会加 index 前缀）
-    CKPT_DIR=$(ls -d results/*-${MODEL/\//-}-EncoderKV/checkpoints 2>/dev/null | head -1)
-    if [ -z "$CKPT_DIR" ]; then
-        # 回退到 results/<exp_name>/checkpoints
-        CKPT_DIR="${SAVE_PATH}/checkpoints"
-    fi
+    # checkpoint 目录即 results/<exp_name>/checkpoints
+    CKPT_DIR="${SAVE_PATH}/checkpoints"
 
     # 确定要评估的 checkpoint steps
     if [ -z "$EVAL_STEPS" ]; then
@@ -267,21 +263,21 @@ if [ "$SKIP_EVAL" = "false" ]; then
         SAMPLE_DIR_BASE="${CKPT_DIR}"
 
         # 生成样本（多 GPU）
-        # torchrun --standalone --nproc_per_node=${NUM_GPUS} --master_port=${EVAL_MASTER_PORT} \
-        #     sample_encoder_ddp.py \
-        #     --model ${MODEL} \
-        #     --ckpt ${CKPT_PATH} \
-        #     --image-size ${IMAGE_SIZE} \
-        #     --num-enc-kv-layers ${NUM_KV_LAYERS} \
-        #     --enc-dim ${ENC_DIM} \
-        #     --enc-num-heads ${ENC_NUM_HEADS} \
-        #     --encoder-depth ${ENCODER_DEPTH} \
-        #     --vae ${VAE} \
-        #     --cfg-scale ${CFG_SCALE} \
-        #     --num-sampling-steps ${NUM_SAMPLING_STEPS} \
-        #     --num-fid-samples ${NUM_FID_SAMPLES} \
-        #     --per-proc-batch-size ${EVAL_BATCH_SIZE} \
-        #     --sample-dir ${SAMPLE_DIR_BASE}
+        torchrun --standalone --nproc_per_node=${NUM_GPUS} --master_port=${EVAL_MASTER_PORT} \
+            sample_encoder_ddp.py \
+            --model ${MODEL} \
+            --ckpt ${CKPT_PATH} \
+            --image-size ${IMAGE_SIZE} \
+            --num-enc-kv-layers ${NUM_KV_LAYERS} \
+            --enc-dim ${ENC_DIM} \
+            --enc-num-heads ${ENC_NUM_HEADS} \
+            --encoder-depth ${ENCODER_DEPTH} \
+            --vae ${VAE} \
+            --cfg-scale ${CFG_SCALE} \
+            --num-sampling-steps ${NUM_SAMPLING_STEPS} \
+            --num-fid-samples ${NUM_FID_SAMPLES} \
+            --per-proc-batch-size ${EVAL_BATCH_SIZE} \
+            --sample-dir ${SAMPLE_DIR_BASE}
 
         # 找到生成的 npz 文件
         MODEL_STR="${MODEL/\//-}"

@@ -271,9 +271,12 @@ def main(args):
     # Setup experiment folder:
     if rank == 0:
         os.makedirs(args.results_dir, exist_ok=True)
-        experiment_index = len(glob(f"{args.results_dir}/*"))
-        model_string_name = args.model.replace("/", "-")
-        experiment_dir = f"{args.results_dir}/{experiment_index:03d}-{model_string_name}-EncoderKV"
+        if args.exp_name:
+            experiment_dir = f"{args.results_dir}/{args.exp_name}"
+        else:
+            experiment_index = len(glob(f"{args.results_dir}/*"))
+            model_string_name = args.model.replace("/", "-")
+            experiment_dir = f"{args.results_dir}/{experiment_index:03d}-{model_string_name}-EncoderKV"
         checkpoint_dir = f"{experiment_dir}/checkpoints"
         os.makedirs(checkpoint_dir, exist_ok=True)
         logger = create_logger(experiment_dir)
