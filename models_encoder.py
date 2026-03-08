@@ -384,6 +384,11 @@ class DiTWithEncoderKV(nn.Module):
         self._distill_loss = total_distill_loss
         self._zs = zs
 
+        # Connect repa_projector to output graph so DDP doesn't mark it as unused.
+        # Adds 0.0 to output — no effect on values, only on autograd graph.
+        if zs is not None and self.training:
+            x = x + 0.0 * zs.sum()
+
         return x
 
     def forward_with_cfg(self, x, t, y, cfg_scale):

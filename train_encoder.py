@@ -380,7 +380,7 @@ def main(args):
         model = torch.compile(model)
     ema = deepcopy(model).to(device)
     requires_grad(ema, False)
-    model = DDP(model, device_ids=[rank], find_unused_parameters=True, static_graph=True)
+    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     # Restore EMA and optimizer after DDP (opt needs DDP parameters)
     if args.resume_step > 0:
