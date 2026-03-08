@@ -29,5 +29,5 @@ distill-coeff: 1.0
 proj-coeff: 0.5
 encoder-depth: 10
 repa-loss: cosine
-repa-proj-type: mlp   # linear, mlp, or conv
-repa-proj-kernel-size: 1  # kernel size for conv (ignored for linear/mlp)
+repa-proj-type: conv  # linear, mlp, or conv
+repa-proj-kernel-size: 3  # kernel size for conv (ignored for linear/mlp)
