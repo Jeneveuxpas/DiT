@@ -109,7 +109,7 @@ def main(args):
     if latents_stats_path is None:
         latents_stats_path = args.latents_stats_path
     if latents_stats_path and os.path.exists(latents_stats_path):
-        latents_stats = torch.load(latents_stats_path, map_location=device, weights_only=False)
+        latents_stats = torch.load(latents_stats_path, map_location=f"cuda:{device}", weights_only=False)
         latents_scale = latents_stats['latents_scale'].to(device).view(1, -1, 1, 1)
         latents_bias = latents_stats['latents_bias'].to(device).view(1, -1, 1, 1)
         if rank == 0:
