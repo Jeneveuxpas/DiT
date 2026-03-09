@@ -75,7 +75,7 @@ class AttentionWithEncoderKV(nn.Module):
             # o* = SDPA(Q, h(K*), h(V*)) — scaffold output, enc_k/v already no_grad
             o_star = F.scaled_dot_product_attention(q.detach(), enc_k_use, enc_v_use).detach()
 
-            distill_loss = F.mse_loss(x_out, o_star)
+            distill_loss = F.mse_loss(x_out.float(), o_star.float())
         else:
             # No encoder KV: standard self-attention (Flash Attention)
             x_out = F.scaled_dot_product_attention(q, k, v)
@@ -173,12 +173,13 @@ class ProjectionLayer(nn.Module):
         B, T, D = x.shape
         if self.proj_type in ("linear", "mlp"):
             return self.projection_layer(x.reshape(B * T, D)).reshape(B, T, -1)
-        else:  # conv
+        else:  # conv — run in float32 to avoid fp16 overflow
             H = W = int(math.isqrt(T))
             assert H * W == T, f"conv projector requires square token grid; got T={T}"
             x_ = x.reshape(B, H, W, D).permute(0, 3, 1, 2).contiguous()  # (B, D, H, W)
-            y = self.projection_layer(x_)                                   # (B, out_dim, H, W)
-            return y.permute(0, 2, 3, 1).contiguous().reshape(B, T, -1)
+            with torch.cuda.amp.autocast(enabled=False):
+                y = self.projection_layer(x_.float())                       # (B, out_dim, H, W)
+            return y.permute(0, 2, 3, 1).contiguous().reshape(B, T, -1).to(x.dtype)
 
 
 class DiTWithEncoderKV(nn.Module):
@@ -259,6 +260,7 @@ class DiTWithEncoderKV(nn.Module):
                 num_layers=num_enc_kv_layers,
                 proj_type=kv_proj_type,
                 norm_type=kv_norm_type,
+                kv_zscore_alpha=getattr(self, '_kv_zscore_alpha', 1.0),
             )
         else:
             self.kv_projection = None
@@ -280,7 +282,7 @@ class DiTWithEncoderKV(nn.Module):
 
     def initialize_weights(self):
         def _basic_init(module):
-            if isinstance(module, nn.Linear):
+            if isinstance(module, (nn.Linear, nn.Conv2d)):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
@@ -349,15 +351,10 @@ class DiTWithEncoderKV(nn.Module):
         c = t_emb + y_emb
 
         # Project encoder KV if provided
-        # In Stage 2, kv_projection output only feeds o_star (no_grad target),
-        # so wrap in no_grad to avoid unnecessary computation graph overhead.
+        # Stage is passed to kv_projection: stage 2 detaches output internally.
         projected_kv = None
         if enc_kv_list is not None and self.kv_projection is not None:
-            if stage == 2:
-                with torch.no_grad():
-                    projected_kv = self.kv_projection(enc_kv_list)
-            else:
-                projected_kv = self.kv_projection(enc_kv_list)
+            projected_kv = self.kv_projection(enc_kv_list, stage=stage)
 
         total_distill_loss = torch.tensor(0.0, device=x.device)
         zs = None

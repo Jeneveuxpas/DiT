@@ -563,40 +563,40 @@ def main(args):
                 loss_dict = diffusion.training_losses(model, x_latent, t, model_kwargs)
                 denoise_loss = loss_dict["loss"].mean()
 
-                # Get side outputs from model:
-                model_module = model.module if hasattr(model, 'module') else model
-                distill_loss = model_module._distill_loss
-                zs = model_module._zs
+            # Get side outputs from model (outside autocast for numerical stability):
+            model_module = model.module if hasattr(model, 'module') else model
+            distill_loss = model_module._distill_loss.float()
+            zs = model_module._zs
 
-                # Compute REPA projection loss:
-                proj_loss = torch.tensor(0.0, device=device)
-                if proj_loss_fn is not None:
-                    if enc_features is None:
-                        raise RuntimeError(
-                            "proj_coeff > 0 but enc_features is None. "
-                            "Check that the encoder ran and returned patch tokens."
-                        )
-                    if zs is None:
-                        raise RuntimeError(
-                            "proj_coeff > 0 but model._zs is None. "
-                            f"Check that encoder_depth ({args.encoder_depth}) <= model depth."
-                        )
-                if proj_loss_fn is not None and enc_features is not None and zs is not None:
-                    if enc_features.shape[1] != zs.shape[1]:
-                        B, N_enc, D_enc = enc_features.shape
-                        N_dit = zs.shape[1]
-                        h_enc = w_enc = int(N_enc ** 0.5)
-                        h_dit = w_dit = int(N_dit ** 0.5)
-                        enc_features = enc_features.permute(0, 2, 1).reshape(B, D_enc, h_enc, w_enc)
-                        enc_features = torch.nn.functional.interpolate(
-                            enc_features, size=(h_dit, w_dit), mode='bilinear', align_corners=False
-                        )
-                        enc_features = enc_features.reshape(B, D_enc, N_dit).permute(0, 2, 1)
-                    proj_loss = proj_loss_fn(zs, enc_features.detach())
+            # Compute REPA projection loss in float32 (outside autocast):
+            proj_loss = torch.tensor(0.0, device=device)
+            if proj_loss_fn is not None:
+                if enc_features is None:
+                    raise RuntimeError(
+                        "proj_coeff > 0 but enc_features is None. "
+                        "Check that the encoder ran and returned patch tokens."
+                    )
+                if zs is None:
+                    raise RuntimeError(
+                        "proj_coeff > 0 but model._zs is None. "
+                        f"Check that encoder_depth ({args.encoder_depth}) <= model depth."
+                    )
+            if proj_loss_fn is not None and enc_features is not None and zs is not None:
+                if enc_features.shape[1] != zs.shape[1]:
+                    B, N_enc, D_enc = enc_features.shape
+                    N_dit = zs.shape[1]
+                    h_enc = w_enc = int(N_enc ** 0.5)
+                    h_dit = w_dit = int(N_dit ** 0.5)
+                    enc_features = enc_features.permute(0, 2, 1).reshape(B, D_enc, h_enc, w_enc)
+                    enc_features = torch.nn.functional.interpolate(
+                        enc_features, size=(h_dit, w_dit), mode='bilinear', align_corners=False
+                    )
+                    enc_features = enc_features.reshape(B, D_enc, N_dit).permute(0, 2, 1)
+                proj_loss = proj_loss_fn(zs, enc_features.detach())
 
-                # Compute total loss:
-                distill_coeff = args.distill_coeff if stage == 2 else 0.0
-                loss = denoise_loss + args.proj_coeff * proj_loss + distill_coeff * distill_loss
+            # Compute total loss in float32:
+            distill_coeff = args.distill_coeff if stage == 2 else 0.0
+            loss = denoise_loss.float() + args.proj_coeff * proj_loss + distill_coeff * distill_loss
 
             opt.zero_grad()
             if scaler is not None:
@@ -610,6 +610,21 @@ def main(args):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 opt.step()
             update_ema(ema, model.module)
+
+            # Compute gradient norms for monitoring
+            grad_norm_total = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+            # Per-component gradient norms
+            grad_norm_repa = torch.tensor(0.0, device=device)
+            grad_norm_dit = torch.tensor(0.0, device=device)
+            for name, p in model.named_parameters():
+                if p.grad is not None:
+                    pnorm = p.grad.data.float().norm(2) ** 2
+                    if 'repa_projector' in name:
+                        grad_norm_repa += pnorm
+                    else:
+                        grad_norm_dit += pnorm
+            grad_norm_repa = grad_norm_repa.sqrt().item()
+            grad_norm_dit = grad_norm_dit.sqrt().item()
 
             # Logging:
             running_loss += loss.item()
@@ -645,15 +660,20 @@ def main(args):
                 if rank == 0:
                     pbar.set_postfix(loss=f"{avg_loss:.4f}", stage=stage, step=train_steps)
                 if use_wandb:
-                    wandb.log({
+                    log_dict = {
                         "loss": avg_loss,
                         "denoise_loss": avg_denoise,
                         "proj_loss": avg_proj,
                         "distill_loss": avg_distill,
-                        "steps_per_sec": steps_per_sec,
                         "stage": stage,
                         "epoch": epoch,
-                    }, step=train_steps)
+                        "grad_norm/total": grad_norm_total.item() if isinstance(grad_norm_total, torch.Tensor) else grad_norm_total,
+                        "grad_norm/repa_projector": grad_norm_repa,
+                        "grad_norm/dit": grad_norm_dit,
+                    }
+                    if scaler is not None:
+                        log_dict["grad_scaler/scale"] = scaler.get_scale()
+                    wandb.log(log_dict, step=train_steps)
                 running_loss = 0
                 running_denoise_loss = 0
                 running_proj_loss = 0

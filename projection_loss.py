@@ -34,8 +34,9 @@ class CosineProjectionLoss(nn.Module):
     Maximizes cosine similarity between projected DiT features and encoder features.
     Matches SIT's implementation: zscore only on model output, along spatial dim (dim=1).
     """
-    def __init__(self, **kwargs):
+    def __init__(self, zscore_alpha=0.6, **kwargs):
         super().__init__()
+        self.zscore_alpha = zscore_alpha
 
     def forward(self, dit_features, enc_features):
         """
@@ -50,7 +51,7 @@ class CosineProjectionLoss(nn.Module):
         enc_features = enc_features.float()
 
         # Zscore normalize only model output, along spatial dim (matching SIT)
-        dit_features = zscore_norm(dit_features, dim=1)
+        dit_features = zscore_norm(dit_features, dim=1, alpha=self.zscore_alpha)
 
         # L2 normalize both for cosine similarity
         dit_features = F.normalize(dit_features, dim=-1)
@@ -65,8 +66,9 @@ class MSEProjectionLoss(nn.Module):
     MSE projection loss between DiT and encoder features.
     Matches SIT: zscore only on model output, along spatial dim (dim=1).
     """
-    def __init__(self, **kwargs):
+    def __init__(self, zscore_alpha=0.6, **kwargs):
         super().__init__()
+        self.zscore_alpha = zscore_alpha
 
     def forward(self, dit_features, enc_features):
         """
@@ -81,7 +83,7 @@ class MSEProjectionLoss(nn.Module):
         enc_features = enc_features.float()
 
         # Zscore normalize only model output, along spatial dim (matching SIT)
-        dit_features = zscore_norm(dit_features, dim=1)
+        dit_features = zscore_norm(dit_features, dim=1, alpha=self.zscore_alpha)
 
         loss = F.mse_loss(dit_features, enc_features)
         return loss

@@ -28,7 +28,7 @@ kv-norm-type: none
 stage1-steps: 30000
 distill-coeff: 1.0
 
-# REPA
+# REPAi
 proj-coeff: 0.5
 encoder-depth: 10
 repa-loss: cosine

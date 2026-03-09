@@ -282,14 +282,16 @@ if [ "$SKIP_EVAL" = "false" ]; then
 
         # 找到生成的 npz 文件
         MODEL_STR="${MODEL/\//-}"
-        STEP_STR=$(printf '%07d' ${STEP} 2>/dev/null || echo ${STEP})
+        STEP_INT=$(echo ${STEP} | sed 's/^0*//' | grep -o '[0-9]*')
+        [ -z "$STEP_INT" ] && STEP_INT=0
+        STEP_STR=$(printf '%07d' ${STEP_INT})
         SAMPLE_NPZ="${SAMPLE_DIR_BASE}/${MODEL_STR}-${STEP_STR}-size${IMAGE_SIZE}-cfg${CFG_SCALE}-seed0.npz"
 
         if [ ! -f "$SAMPLE_NPZ" ]; then
-            # 宽松匹配
-            SAMPLE_NPZ=$(ls ${SAMPLE_DIR_BASE}/${MODEL_STR}-*-size${IMAGE_SIZE}-cfg${CFG_SCALE}*.npz 2>/dev/null | head -1)
+            # 宽松匹配（仅匹配当前 step）
+            SAMPLE_NPZ=$(ls ${SAMPLE_DIR_BASE}/${MODEL_STR}-${STEP_STR}-size${IMAGE_SIZE}*.npz 2>/dev/null | head -1)
         fi
-
+        
         if [ -f "$SAMPLE_NPZ" ]; then
             echo "计算 FID..."
             python evaluations/evaluator.py \

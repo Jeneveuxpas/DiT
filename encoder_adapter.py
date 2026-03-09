@@ -4,51 +4,52 @@
 
 import torch
 import torch.nn as nn
-import math
 
 
-def zscore_norm(x, dim=-1, eps=1e-6):
+def zscore_norm(x, dim=-1, alpha=1.0, eps=1e-6):
     """Z-score normalization along a given dimension."""
+    input_dtype = x.dtype
+    x = x.float()
     mean = x.mean(dim=dim, keepdim=True)
     std = x.std(dim=dim, keepdim=True)
-    return (x - mean) / (std + eps)
+    return ((x - alpha * mean) / (std + eps)).to(input_dtype)
 
 
 class ZScoreNorm(nn.Module):
     """Z-score normalization as a module."""
-    def __init__(self, dim=-1, eps=1e-6):
+    def __init__(self, dim=-1, alpha=1.0, eps=1e-6):
         super().__init__()
         self.dim = dim
+        self.alpha = alpha
         self.eps = eps
 
     def forward(self, x):
-        return zscore_norm(x, dim=self.dim, eps=self.eps)
+        return zscore_norm(x, dim=self.dim, alpha=self.alpha, eps=self.eps)
 
 
-def build_kv_norm(norm_type, dim):
+def build_kv_norm(norm_type, dim, alpha=1.0):
     """Build normalization layer for K/V projections."""
     if norm_type == "layer":
         return nn.LayerNorm(dim)
     elif norm_type == "zscore":
-        return ZScoreNorm(dim=-1)
+        return ZScoreNorm(dim=1, alpha=alpha)  # spatial norm (matching SIT)
     elif norm_type == "none":
         return nn.Identity()
     else:
         raise ValueError(f"Unknown kv_norm_type: {norm_type}")
 
 
-def build_kv_mlp(in_dim, out_dim, proj_type="linear"):
-    """Build projection MLP for K/V."""
-    if proj_type == "linear":
-        return nn.Linear(in_dim, out_dim)
-    elif proj_type == "mlp":
-        return nn.Sequential(
-            nn.Linear(in_dim, out_dim),
-            nn.GELU(),
-            nn.Linear(out_dim, out_dim),
-        )
-    else:
-        raise ValueError(f"Unknown kv_proj_type: {proj_type}")
+def build_kv_mlp(in_dim, out_dim, hidden_dim=None):
+    """Build MLP for K/V projection: in_dim -> hidden_dim -> hidden_dim -> out_dim"""
+    if hidden_dim is None:
+        hidden_dim = max(in_dim, out_dim)
+    return nn.Sequential(
+        nn.Linear(in_dim, hidden_dim),
+        nn.SiLU(),
+        nn.Linear(hidden_dim, hidden_dim),
+        nn.SiLU(),
+        nn.Linear(hidden_dim, out_dim),
+    )
 
 
 class EncoderKVExtractor(nn.Module):
@@ -132,10 +133,11 @@ class EncoderKVExtractor(nn.Module):
 
 class EncoderKVProjection(nn.Module):
     """
-    Project encoder K/V to DiT's dimensions.
+    Project encoder K/V to DiT's dimensions (matching SIT's implementation).
 
-    The encoder may have different hidden_size and num_heads than DiT,
-    so we need linear projections to align them.
+    Projects at full-dimension level (enc_dim -> dit_dim), allowing cross-head
+    information mixing. Then reshapes to (B, dit_heads, N, dit_head_dim).
+    Normalization is applied before projection (norm -> project).
     """
     def __init__(
         self,
@@ -143,54 +145,76 @@ class EncoderKVProjection(nn.Module):
         enc_num_heads,
         dit_dim,
         dit_num_heads,
-        num_layers,
+        num_layers=1,
         proj_type="linear",
         norm_type="layer",
+        kv_zscore_alpha=1.0,
     ):
-        """
-        Args:
-            enc_dim: Encoder hidden dimension.
-            enc_num_heads: Number of attention heads in encoder.
-            dit_dim: DiT hidden dimension.
-            dit_num_heads: Number of attention heads in DiT.
-            num_layers: Number of layers to project.
-            proj_type: Type of projection ("linear" or "mlp").
-            norm_type: Type of normalization ("layer", "zscore", or "none").
-        """
         super().__init__()
         self.enc_dim = enc_dim
         self.enc_num_heads = enc_num_heads
         self.dit_dim = dit_dim
         self.dit_num_heads = dit_num_heads
-        enc_head_dim = enc_dim // enc_num_heads
-        dit_head_dim = dit_dim // dit_num_heads
+        self.dit_head_dim = dit_dim // dit_num_heads
+        self.proj_type = proj_type
+        self.num_layers = num_layers
 
-        # Per-layer K and V projections
-        self.k_projs = nn.ModuleList([
-            build_kv_mlp(enc_head_dim, dit_head_dim, proj_type)
-            for _ in range(num_layers)
-        ])
-        self.v_projs = nn.ModuleList([
-            build_kv_mlp(enc_head_dim, dit_head_dim, proj_type)
-            for _ in range(num_layers)
-        ])
-        # Per-layer normalization
+        # Per-layer normalization (applied before projection)
         self.k_norms = nn.ModuleList([
-            build_kv_norm(norm_type, dit_head_dim)
+            build_kv_norm(norm_type, enc_dim, alpha=kv_zscore_alpha)
             for _ in range(num_layers)
         ])
         self.v_norms = nn.ModuleList([
-            build_kv_norm(norm_type, dit_head_dim)
+            build_kv_norm(norm_type, enc_dim, alpha=kv_zscore_alpha)
             for _ in range(num_layers)
         ])
 
-    def forward(self, kv_list):
+        # Per-layer K and V projections (full-dimension: enc_dim -> dit_dim)
+        if proj_type == "linear":
+            self.k_projs = nn.ModuleList([
+                nn.Linear(enc_dim, dit_dim, bias=False) for _ in range(num_layers)
+            ])
+            self.v_projs = nn.ModuleList([
+                nn.Linear(enc_dim, dit_dim, bias=False) for _ in range(num_layers)
+            ])
+        elif proj_type == "mlp":
+            self.k_projs = nn.ModuleList([
+                build_kv_mlp(enc_dim, dit_dim) for _ in range(num_layers)
+            ])
+            self.v_projs = nn.ModuleList([
+                build_kv_mlp(enc_dim, dit_dim) for _ in range(num_layers)
+            ])
+        else:
+            raise ValueError(f"Unknown proj_type: {proj_type}. Choose from: linear, mlp")
+
+    def _project_component(self, enc_tensor, norm, proj):
+        """
+        Project a single K or V component.
+
+        Args:
+            enc_tensor: (B, enc_heads, N, enc_head_dim)
+            norm: normalization module
+            proj: projection module
+
+        Returns:
+            (B, dit_heads, N, dit_head_dim)
+        """
+        B, H_enc, N, D_enc = enc_tensor.shape
+        # Merge heads back to full dim: (B, N, enc_dim)
+        flat = enc_tensor.transpose(1, 2).reshape(B, N, self.enc_dim)
+        # Norm then project: (B, N, enc_dim) -> (B, N, dit_dim)
+        projected = proj(norm(flat).reshape(B * N, self.enc_dim)).reshape(B, N, self.dit_dim)
+        # Reshape to multi-head: (B, dit_heads, N, dit_head_dim)
+        return projected.reshape(B, N, self.dit_num_heads, self.dit_head_dim).transpose(1, 2)
+
+    def forward(self, kv_list, stage=1):
         """
         Project encoder K/V to DiT dimensions.
 
         Args:
             kv_list: List of (K, V) tuples from EncoderKVExtractor.
                      Each K, V: (B, enc_num_heads, N_enc, enc_head_dim)
+            stage: 1 = trainable projection, 2 = detached (no gradient).
 
         Returns:
             List of (K_proj, V_proj) tuples.
@@ -198,41 +222,12 @@ class EncoderKVProjection(nn.Module):
         """
         projected = []
         for i, (k, v) in enumerate(kv_list):
-            B, H_enc, N, D_enc = k.shape
-            # Merge heads into batch for projection: (B*H_enc, N, D_enc)
-            k_flat = k.reshape(B * H_enc, N, D_enc)
-            v_flat = v.reshape(B * H_enc, N, D_enc)
+            k_proj = self._project_component(k, self.k_norms[i], self.k_projs[i])
+            v_proj = self._project_component(v, self.v_norms[i], self.v_projs[i])
 
-            # Project to dit head dim
-            k_proj = self.k_projs[i](k_flat)  # (B*H_enc, N, dit_head_dim)
-            v_proj = self.v_projs[i](v_flat)
-
-            # Normalize
-            k_proj = self.k_norms[i](k_proj)
-            v_proj = self.v_norms[i](v_proj)
-
-            dit_head_dim = k_proj.shape[-1]
-
-            # Reshape: if enc_num_heads != dit_num_heads, we average/repeat heads
-            k_proj = k_proj.reshape(B, H_enc, N, dit_head_dim)
-            v_proj = v_proj.reshape(B, H_enc, N, dit_head_dim)
-
-            if H_enc != self.dit_num_heads:
-                # Interpolate heads via repeat + reshape
-                # Simple approach: repeat and truncate/average
-                if H_enc < self.dit_num_heads:
-                    repeat_factor = math.ceil(self.dit_num_heads / H_enc)
-                    k_proj = k_proj.repeat(1, repeat_factor, 1, 1)[:, :self.dit_num_heads]
-                    v_proj = v_proj.repeat(1, repeat_factor, 1, 1)[:, :self.dit_num_heads]
-                else:
-                    # Average groups of encoder heads
-                    group_size = H_enc // self.dit_num_heads
-                    k_proj = k_proj[:, :self.dit_num_heads * group_size].reshape(
-                        B, self.dit_num_heads, group_size, N, dit_head_dim
-                    ).mean(dim=2)
-                    v_proj = v_proj[:, :self.dit_num_heads * group_size].reshape(
-                        B, self.dit_num_heads, group_size, N, dit_head_dim
-                    ).mean(dim=2)
+            if stage == 2:
+                k_proj = k_proj.detach()
+                v_proj = v_proj.detach()
 
             projected.append((k_proj, v_proj))
         return projected
