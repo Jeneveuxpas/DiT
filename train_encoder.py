@@ -456,6 +456,7 @@ def main(args):
     running_proj_loss = 0
     running_distill_loss = 0
     start_time = time()
+    _encoder_skipped_logged = False
 
     logger.info(f"Training for {args.epochs} epochs...")
     logger.info(f"Stage 1 steps: {args.stage1_steps}")
@@ -502,6 +503,14 @@ def main(args):
             x = x.squeeze(dim=1).to(device)
             y = y.to(device)
 
+            # Check if encoder is still needed at this step
+            need_proj = args.proj_coeff > 0 and not (args.proj_early_stop > 0 and train_steps >= args.proj_early_stop)
+            need_distill = args.use_kv and not (args.distill_early_stop > 0 and train_steps >= args.distill_early_stop)
+            need_encoder = encoder is not None and (need_proj or need_distill)
+            if not need_encoder and encoder is not None and not _encoder_skipped_logged:
+                logger.info(f"Step {train_steps}: all auxiliary losses stopped, skipping encoder forward pass")
+                _encoder_skipped_logged = True
+
             with torch.no_grad():
                 # Sample from VAE posterior and normalize (SIT-style)
                 x_latent = sample_posterior(x, latents_scale=latents_scale, latents_bias=latents_bias)
@@ -510,7 +519,7 @@ def main(args):
                 enc_kv_list = None
                 enc_features = None
 
-                if encoder is not None:
+                if need_encoder:
                     if raw_image is None:
                         raise RuntimeError(
                             "Encoder is active (use_kv or proj_coeff > 0) but the dataset did not "
@@ -520,7 +529,7 @@ def main(args):
                     # Preprocess raw uint8 images for DINOv2
                     raw_image_enc = encoder_preprocess(raw_image, resolution=args.enc_resolution)
 
-                    if args.use_kv and args.proj_coeff > 0:
+                    if need_distill and need_proj:
                         # Joint path: single forward extracts both KV (via hooks) and features
                         kv_extractor._kv_cache = {}
                         features = encoder.forward_features(raw_image_enc)
@@ -544,9 +553,9 @@ def main(args):
                                 f"(captured {len(enc_kv_list)}/{len(enc_layer_indices)}). "
                                 f"Check that enc_layer_indices {enc_layer_indices} are valid for this encoder."
                             )
-                    elif args.use_kv:
+                    elif need_distill:
                         enc_kv_list = kv_extractor(raw_image_enc)
-                    elif args.proj_coeff > 0:
+                    elif need_proj:
                         features = encoder.forward_features(raw_image_enc)
                         if hasattr(encoder, 'num_prefix_tokens') and encoder.num_prefix_tokens > 0:
                             enc_features = features[:, encoder.num_prefix_tokens:]
@@ -781,20 +790,20 @@ if __name__ == "__main__":
                         help="Encoder input resolution (DINOv2 default: 224)")
     parser.add_argument("--enc-layer-indices", type=str, default=None,
                         help="Comma-separated encoder layer indices for KV extraction, 1-based like SIT (e.g., '20,23')")
-    parser.add_argument("--num-kv-layers", type=int, default=4,
+    parser.add_argument("--num-kv-layers", type=int, default=1,
                         help="Number of encoder layers to use for KV (used if --enc-layer-indices not set)")
     parser.add_argument("--dit-layer-indices", type=str, default=None,
                         help="Comma-separated DiT block indices to inject encoder KV into, 1-based like SIT (e.g., '4,8'). "
                              "Must match length of enc-layer-indices. Default: first N DiT blocks.")
     parser.add_argument("--kv-proj-type", type=str, choices=["linear", "mlp"], default="linear",
                         help="Projection type for encoder KV")
-    parser.add_argument("--kv-norm-type", type=str, choices=["layer", "zscore", "none"], default="layer",
+    parser.add_argument("--kv-norm-type", type=str, choices=["layer", "zscore", "none"], default="none",
                         help="Normalization type for projected KV")
 
     # Two-stage training args:
-    parser.add_argument("--stage1-steps", type=int, default=50000,
+    parser.add_argument("--stage1-steps", type=int, default=30000,
                         help="Number of training steps for stage 1 (encoder KV)")
-    parser.add_argument("--distill-coeff", type=float, default=1.0,
+    parser.add_argument("--distill-coeff", type=float, default=2.0,
                         help="Distillation loss coefficient (stage 2 only)")
     parser.add_argument("--distill-early-stop", type=int, default=0,
                         help="Stop distillation loss after this many steps (0 = never stop)")
@@ -804,7 +813,7 @@ if __name__ == "__main__":
                         help="REPA projection loss coefficient (0 to disable)")
     parser.add_argument("--proj-early-stop", type=int, default=0,
                         help="Stop REPA projection loss after this many steps (0 = never stop)")
-    parser.add_argument("--encoder-depth", type=int, default=8,
+    parser.add_argument("--encoder-depth", type=int, default=10,
                         help="DiT layer index at which to extract features for REPA projector")
     parser.add_argument("--repa-loss", type=str, choices=["cosine", "mse"], default="cosine",
                         help="REPA projection loss type")
