@@ -478,13 +478,20 @@ def main(args):
 
     steps_per_epoch = len(loader)
     start_epoch = train_steps // steps_per_epoch
+    skip_batches = train_steps % steps_per_epoch  # batches already done in this epoch
 
     for epoch in range(start_epoch, args.epochs):
         sampler.set_epoch(epoch)
-        logger.info(f"Beginning epoch {epoch}...")
+        if skip_batches > 0:
+            logger.info(f"Resuming epoch {epoch}, skipping {skip_batches}/{steps_per_epoch} batches...")
+        else:
+            logger.info(f"Beginning epoch {epoch}...")
 
         pbar = tqdm(loader, desc=f"Epoch {epoch}", disable=(rank != 0))
-        for batch in pbar:
+        for batch_idx, batch in enumerate(pbar):
+            if skip_batches > 0:
+                skip_batches -= 1
+                continue
             # Unpack SIT-style batch: (raw_image, latent_moments, label)
             if len(batch) == 3:
                 raw_image, x, y = batch
