@@ -51,7 +51,7 @@ class CosineProjectionLoss(nn.Module):
         enc_features = enc_features.float()
 
         # Zscore normalize only model output, along spatial dim (matching SIT)
-        dit_features = zscore_norm(dit_features, dim=1, alpha=self.zscore_alpha)
+        dit_features = zscore_norm(dit_features, dim=1, alpha=0.6)
 
         # L2 normalize both for cosine similarity
         dit_features = F.normalize(dit_features, dim=-1)

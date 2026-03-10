@@ -460,6 +460,10 @@ def main(args):
     logger.info(f"Training for {args.epochs} epochs...")
     logger.info(f"Stage 1 steps: {args.stage1_steps}")
     logger.info(f"Distill coeff: {args.distill_coeff}, Proj coeff: {args.proj_coeff}")
+    if args.proj_early_stop > 0:
+        logger.info(f"REPA projection loss early stop at step {args.proj_early_stop}")
+    if args.distill_early_stop > 0:
+        logger.info(f"Distillation loss early stop at step {args.distill_early_stop}")
 
     # Initialize wandb (rank 0 only)
     use_wandb = args.wandb and HAS_WANDB and rank == 0
@@ -596,7 +600,12 @@ def main(args):
 
             # Compute total loss in float32:
             distill_coeff = args.distill_coeff if stage == 2 else 0.0
-            loss = denoise_loss.float() + args.proj_coeff * proj_loss + distill_coeff * distill_loss
+            if args.distill_early_stop > 0 and train_steps >= args.distill_early_stop:
+                distill_coeff = 0.0
+            proj_coeff = args.proj_coeff
+            if args.proj_early_stop > 0 and train_steps >= args.proj_early_stop:
+                proj_coeff = 0.0
+            loss = denoise_loss.float() + proj_coeff * proj_loss + distill_coeff * distill_loss
 
             opt.zero_grad()
             if scaler is not None:
@@ -780,10 +789,14 @@ if __name__ == "__main__":
                         help="Number of training steps for stage 1 (encoder KV)")
     parser.add_argument("--distill-coeff", type=float, default=1.0,
                         help="Distillation loss coefficient (stage 2 only)")
+    parser.add_argument("--distill-early-stop", type=int, default=0,
+                        help="Stop distillation loss after this many steps (0 = never stop)")
 
     # REPA projection args:
     parser.add_argument("--proj-coeff", type=float, default=0.5,
                         help="REPA projection loss coefficient (0 to disable)")
+    parser.add_argument("--proj-early-stop", type=int, default=0,
+                        help="Stop REPA projection loss after this many steps (0 = never stop)")
     parser.add_argument("--encoder-depth", type=int, default=8,
                         help="DiT layer index at which to extract features for REPA projector")
     parser.add_argument("--repa-loss", type=str, choices=["cosine", "mse"], default="cosine",

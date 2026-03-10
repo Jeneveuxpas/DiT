@@ -3,7 +3,7 @@
 # DiT Encoder KV — 统一启动脚本（训练 + 评估）
 #
 # 用法:
-#   ./launch.sh --config configs/dit_xl_kv-2.0-repa-0.5.yaml --exp-name dit_xl_kv-2.0-repa-0.5 --gpu 0,1,2,3 --num-gpus 4 --wandb
+#   ./launch.sh --config configs/repa-8.yaml --exp-name repa-8 --gpu 2,3 --num-gpus 2 --wandb
 #   ./launch.sh --exp-name xl_kv1 --model-size XL --gpu 4,5,6,7 --num-gpus 4
 #   ./launch.sh --exp-name xl_kv1 --gpu 4,5,6,7 --num-gpus 4 --eval-only
 #   ./launch.sh --exp-name xl_kv1 --gpu 4,5,6,7 --num-gpus 4 --resume-step 200000
