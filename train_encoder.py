@@ -590,7 +590,7 @@ def main(args):
 
             # Compute REPA projection loss in float32 (outside autocast):
             proj_loss = torch.tensor(0.0, device=device)
-            if proj_loss_fn is not None:
+            if proj_loss_fn is not None and need_proj:
                 if enc_features is None:
                     raise RuntimeError(
                         "proj_coeff > 0 but enc_features is None. "
@@ -601,7 +601,7 @@ def main(args):
                         "proj_coeff > 0 but model._zs is None. "
                         f"Check that encoder_depth ({args.encoder_depth}) <= model depth."
                     )
-            if proj_loss_fn is not None and enc_features is not None and zs is not None:
+            if proj_loss_fn is not None and need_proj and enc_features is not None and zs is not None:
                 if enc_features.shape[1] != zs.shape[1]:
                     B, N_enc, D_enc = enc_features.shape
                     N_dit = zs.shape[1]
