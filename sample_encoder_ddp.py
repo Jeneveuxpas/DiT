@@ -146,41 +146,41 @@ def main(args):
     pbar = tqdm(range(iterations)) if rank == 0 else range(iterations)
     total = 0
 
-    for _ in pbar:
-        z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
-        y = torch.randint(0, args.num_classes, (n,), device=device)
+    # for _ in pbar:
+    #     z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
+    #     y = torch.randint(0, args.num_classes, (n,), device=device)
 
-        if using_cfg:
-            z = torch.cat([z, z], 0)
-            y_null = torch.tensor([args.num_classes] * n, device=device)
-            y = torch.cat([y, y_null], 0)
-            model_kwargs = dict(y=y, cfg_scale=args.cfg_scale)
-            sample_fn = model.forward_with_cfg
-        else:
-            model_kwargs = dict(y=y)
-            sample_fn = model.forward
+    #     if using_cfg:
+    #         z = torch.cat([z, z], 0)
+    #         y_null = torch.tensor([args.num_classes] * n, device=device)
+    #         y = torch.cat([y, y_null], 0)
+    #         model_kwargs = dict(y=y, cfg_scale=args.cfg_scale)
+    #         sample_fn = model.forward_with_cfg
+    #     else:
+    #         model_kwargs = dict(y=y)
+    #         sample_fn = model.forward
 
-        with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
-            samples = diffusion.p_sample_loop(
-                sample_fn, z.shape, z, clip_denoised=False,
-                model_kwargs=model_kwargs, progress=False, device=device
-            )
-        if using_cfg:
-            samples, _ = samples.chunk(2, dim=0)
+    #     with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+    #         samples = diffusion.p_sample_loop(
+    #             sample_fn, z.shape, z, clip_denoised=False,
+    #             model_kwargs=model_kwargs, progress=False, device=device
+    #         )
+    #     if using_cfg:
+    #         samples, _ = samples.chunk(2, dim=0)
 
-        # Un-normalize from SIT-style latent space before VAE decoding
-        if latents_scale is not None:
-            samples = vae.decode(samples / latents_scale + latents_bias).sample
-        else:
-            samples = vae.decode(samples / 0.18215).sample
-        samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
+    #     # Un-normalize from SIT-style latent space before VAE decoding
+    #     if latents_scale is not None:
+    #         samples = vae.decode(samples / latents_scale + latents_bias).sample
+    #     else:
+    #         samples = vae.decode(samples / 0.18215).sample
+    #     samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
 
-        for i, sample in enumerate(samples):
-            idx = i * dist.get_world_size() + rank + total
-            Image.fromarray(sample).save(f"{sample_folder}/{idx:06d}.png")
-        total += global_batch_size
+    #     for i, sample in enumerate(samples):
+    #         idx = i * dist.get_world_size() + rank + total
+    #         Image.fromarray(sample).save(f"{sample_folder}/{idx:06d}.png")
+    #     total += global_batch_size
 
-    dist.barrier()
+    # dist.barrier()
     if rank == 0:
         create_npz_from_sample_folder(sample_folder, args.num_fid_samples)
         print("Done.")
